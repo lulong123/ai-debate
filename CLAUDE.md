@@ -109,10 +109,10 @@ docker-compose up --build
 
 ## 状态
 
-**V1 MVP 完成**。初始提交 `e07304d`，54 个文件，6007 行代码。
+**V1 MVP 完成**。3 个 commits，22/22 测试通过。
 
 ### 验证通过
-- 后端: 15/15 测试全部通过 (API 7 + Repository 7 + Orchestrator 1)
+- 后端: 22/22 测试全部通过 (API 7 + Repository 7 + Orchestrator 1 + SSE 7)
 - 前端: TypeScript 编译通过，Vite build 成功 (249KB JS + 18KB CSS)
 - API 冒烟测试: health / create / list / get 全部正常
 
@@ -124,10 +124,11 @@ docker-compose up --build
 - 错误消毒: 分类映射 timeout/auth/rate → 用户友好提示
 - Prompt 缓存: 模板模块级 `_PROMPT_TEMPLATE`
 - httpx 复用: 实例级 `_client` + `close()`
+- SSE 队列泄漏: bounded queue (200) + event history (500) + reconnect replay
+- SSE 重连: 前端 useSSE 追踪 lastEventId，后端支持 replay
 
 ### 待做 (V1.1+)
 - 填入真实 API key 做端到端联调 (需要 LLM_API_KEY)
-- SSE 队列泄漏防护 (bounded queue 或 TTL 清理)
 - SQLite → PostgreSQL (生产部署)
 - 搜索功能实际联调 (Zhipu MCP 或 Tavily)
 - 前端移动端适配
