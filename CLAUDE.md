@@ -109,14 +109,15 @@ docker-compose up --build
 
 ## 状态
 
-**V1 MVP 完成**。3 个 commits，22/22 测试通过。
+**V1 MVP 完成**。6 个 commits，22/22 测试通过，前端 TS 编译 + build 通过。
 
 ### 验证通过
 - 后端: 22/22 测试全部通过 (API 7 + Repository 7 + Orchestrator 1 + SSE 7)
-- 前端: TypeScript 编译通过，Vite build 成功 (249KB JS + 18KB CSS)
+- 前端: TypeScript strict mode 编译通过，Vite build 成功 (251KB JS + 18KB CSS)
 - API 冒烟测试: health / create / list / get 全部正常
+- 前端审查: 6 项问题已修复 (移动端布局、错误状态、类型安全)
 
-### 已修复的代码审查问题
+### 已修复的所有问题
 - DB session 生命周期: orchestrator 使用独立 session
 - 并发启动防护: `_active_sessions` set + 409 Conflict
 - 输入验证: Pydantic Field (topic 1-500字符, max_rounds 1-10, angle_ids 2-6)
@@ -126,9 +127,12 @@ docker-compose up --build
 - httpx 复用: 实例级 `_client` + `close()`
 - SSE 队列泄漏: bounded queue (200) + event history (500) + reconnect replay
 - SSE 重连: 前端 useSSE 追踪 lastEventId，后端支持 replay
+- 前端移动端: Discussion 响应式布局 (md:flex-row)，header flex-wrap
+- 前端错误状态: alert() → inline error banners + 恢复按钮
+- 前端类型安全: api.ts 全部接口类型化
+- 前端错误区分: Minutes 区分 "不存在" vs "网络失败"
 
 ### 待做 (V1.1+)
 - 填入真实 API key 做端到端联调 (需要 LLM_API_KEY)
 - SQLite → PostgreSQL (生产部署)
 - 搜索功能实际联调 (Zhipu MCP 或 Tavily)
-- 前端移动端适配
