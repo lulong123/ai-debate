@@ -15,14 +15,21 @@ export function Angles() {
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
+  const [error, setError] = useState("");
 
   useEffect(() => {
-    if (!sessionId) return;
+    if (!sessionId) {
+      setError("无效的讨论链接");
+      setLoading(false);
+      return;
+    }
     suggestAngles(sessionId)
       .then((data) => {
         setAngles(data.angles || []);
       })
-      .catch((e) => alert(`获取角度建议失败: ${e.message}`))
+      .catch(() => {
+        setError("获取角度建议失败，请检查网络连接");
+      })
       .finally(() => setLoading(false));
   }, [sessionId]);
 
@@ -38,11 +45,12 @@ export function Angles() {
   async function handleStart() {
     if (!sessionId || selected.size < 2) return;
     setStarting(true);
+    setError("");
     try {
       await startDiscussion(sessionId, Array.from(selected));
       navigate(`/discussion/${sessionId}`);
-    } catch (e) {
-      alert(`开始讨论失败: ${(e as Error).message}`);
+    } catch {
+      setError("开始讨论失败，请重试");
     } finally {
       setStarting(false);
     }
@@ -67,11 +75,25 @@ export function Angles() {
   ];
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-2xl mx-auto px-4 sm:px-0">
       <div className="text-center mb-8">
         <h2 className="text-2xl font-bold mb-2">选择讨论角度</h2>
         <p className="text-neutral-400">至少选择 2 个角度开始讨论</p>
       </div>
+
+      {error && (
+        <div className="bg-red-950/50 border border-red-900/50 rounded-lg p-3 mb-4">
+          <p className="text-sm text-red-300">{error}</p>
+          {error.includes("链接") && (
+            <button
+              onClick={() => navigate("/")}
+              className="text-xs text-blue-400 hover:text-blue-300 mt-2"
+            >
+              返回首页
+            </button>
+          )}
+        </div>
+      )}
 
       <div className="grid gap-3">
         {angles.map((angle, i) => {

@@ -6,6 +6,7 @@ export function Home() {
   const navigate = useNavigate();
   const [topic, setTopic] = useState("");
   const [loading, setLoading] = useState(false);
+  const [error, setError] = useState("");
   const [clarification, setClarification] = useState<{
     question: string;
     sessionId: string;
@@ -14,17 +15,17 @@ export function Home() {
   async function handleSubmit() {
     if (!topic.trim()) return;
     setLoading(true);
+    setError("");
     try {
       const { session_id } = await createSession(topic.trim());
-      // Run clarification
       const result = await clarifyTopic(session_id);
       if (result.valid) {
         navigate(`/angles/${session_id}`);
       } else {
         setClarification({ question: result.question, sessionId: session_id });
       }
-    } catch (e) {
-      alert(`创建失败: ${(e as Error).message}`);
+    } catch {
+      setError("创建失败，请检查网络连接后重试");
     } finally {
       setLoading(false);
     }
@@ -33,12 +34,13 @@ export function Home() {
   async function handleClarifyAnswer(answer: string) {
     if (!clarification) return;
     setLoading(true);
+    setError("");
     try {
       await refineTopic(clarification.sessionId, answer);
       setClarification(null);
       navigate(`/angles/${clarification.sessionId}`);
-    } catch (e) {
-      alert(`提交失败: ${(e as Error).message}`);
+    } catch {
+      setError("提交失败，请检查网络连接后重试");
     } finally {
       setLoading(false);
     }
@@ -50,6 +52,11 @@ export function Home() {
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6">
           <h2 className="text-lg font-semibold mb-4 text-blue-400">主持人有疑问</h2>
           <p className="text-neutral-300 mb-6">{clarification.question}</p>
+          {error && (
+            <div className="bg-red-950/50 border border-red-900/50 rounded-lg p-3 mb-4">
+              <p className="text-sm text-red-300">{error}</p>
+            </div>
+          )}
           <ClarifyInput onSubmit={handleClarifyAnswer} loading={loading} />
         </div>
       </div>
@@ -57,7 +64,7 @@ export function Home() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto">
+    <div className="max-w-2xl mx-auto px-4 sm:px-0">
       <div className="text-center mb-8">
         <h2 className="text-3xl font-bold mb-2">开始一场讨论</h2>
         <p className="text-neutral-400">
@@ -66,6 +73,11 @@ export function Home() {
       </div>
 
       <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6">
+        {error && (
+          <div className="bg-red-950/50 border border-red-900/50 rounded-lg p-3 mb-4">
+            <p className="text-sm text-red-300">{error}</p>
+          </div>
+        )}
         <textarea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}

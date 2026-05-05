@@ -25,10 +25,25 @@ export function Discussion() {
     return 0;
   }, [events]);
 
+  // Missing session ID guard
+  if (!sessionId) {
+    return (
+      <div className="flex flex-col items-center justify-center py-20 gap-4">
+        <p className="text-neutral-400">无效的讨论链接</p>
+        <button
+          onClick={() => navigate("/")}
+          className="text-sm text-blue-400 hover:text-blue-300"
+        >
+          返回首页
+        </button>
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col h-[calc(100vh-120px)]">
+    <div className="flex flex-col h-[calc(100vh-120px)] overflow-hidden">
       {/* Header bar */}
-      <div className="flex items-center justify-between mb-4 px-1">
+      <div className="flex items-center justify-between mb-4 px-1 flex-wrap gap-2">
         <div className="flex items-center gap-3">
           <div
             className={`w-2 h-2 rounded-full ${
@@ -36,6 +51,8 @@ export function Discussion() {
                 ? "bg-green-500 animate-pulse"
                 : status === "completed"
                 ? "bg-blue-500"
+                : status === "error"
+                ? "bg-red-500"
                 : "bg-neutral-500"
             }`}
           />
@@ -67,19 +84,37 @@ export function Discussion() {
               查看纪要
             </button>
           )}
+          {status === "error" && (
+            <button
+              onClick={() => navigate("/")}
+              className="text-xs bg-neutral-700 hover:bg-neutral-600 text-white px-3 py-1 rounded"
+            >
+              返回首页
+            </button>
+          )}
         </div>
       </div>
 
-      {/* Main content */}
-      <div className="flex gap-4 flex-1 min-h-0">
+      {/* Error banner */}
+      {status === "error" && (
+        <div className="bg-red-950/50 border border-red-900/50 rounded-lg p-3 mb-3">
+          <p className="text-sm text-red-300">
+            {(events[events.length - 1]?.message as string) || "讨论过程中发生错误"}
+          </p>
+          <p className="text-xs text-red-400/70 mt-1">你可以返回首页开始新的讨论</p>
+        </div>
+      )}
+
+      {/* Main content - responsive layout */}
+      <div className="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
         {/* Chat area */}
         <div className="flex-1 min-w-0">
           <ChatStream events={events} />
         </div>
 
-        {/* Score panel */}
+        {/* Score panel - hidden on small screens unless toggled */}
         {showScores && (
-          <div className="w-72 shrink-0 overflow-y-auto">
+          <div className="w-full md:w-72 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-none">
             <ScorePanel events={events} />
           </div>
         )}

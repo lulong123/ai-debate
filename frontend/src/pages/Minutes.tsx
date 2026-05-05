@@ -12,7 +12,7 @@ interface MinutesData {
   disagreements: string[];
   actionable_items: string[];
   summary: string;
-  all_scores: Array<{
+  all_scores?: Array<{
     angle_id: string;
     angle_name: string;
     total: number;
@@ -26,12 +26,17 @@ export function Minutes() {
   const navigate = useNavigate();
   const [minutes, setMinutes] = useState<MinutesData | null>(null);
   const [loading, setLoading] = useState(true);
+  const [fetchError, setFetchError] = useState(false);
 
   useEffect(() => {
     if (!sessionId) return;
+    setFetchError(false);
     getMinutes(sessionId)
       .then((data) => setMinutes(data.minutes))
-      .catch(() => setMinutes(null))
+      .catch(() => {
+        setMinutes(null);
+        setFetchError(true);
+      })
       .finally(() => setLoading(false));
   }, [sessionId]);
 
@@ -79,7 +84,15 @@ export function Minutes() {
   if (!minutes) {
     return (
       <div className="text-center py-20">
-        <p className="text-neutral-400">暂无会议纪要</p>
+        <p className="text-neutral-400">
+          {fetchError ? "加载失败，请检查网络连接" : "暂无会议纪要"}
+        </p>
+        <button
+          onClick={() => fetchError ? window.location.reload() : navigate("/")}
+          className="text-sm text-blue-400 hover:text-blue-300 mt-3"
+        >
+          {fetchError ? "重试" : "返回首页"}
+        </button>
       </div>
     );
   }
