@@ -109,5 +109,25 @@ docker-compose up --build
 
 ## 状态
 
-**V1 MVP 核心完成**。后端 15 个测试全部通过，前端 TypeScript 编译通过，Vite build 成功。
-下一步: 填入真实 API key 进行端到端联调测试。
+**V1 MVP 完成**。初始提交 `e07304d`，54 个文件，6007 行代码。
+
+### 验证通过
+- 后端: 15/15 测试全部通过 (API 7 + Repository 7 + Orchestrator 1)
+- 前端: TypeScript 编译通过，Vite build 成功 (249KB JS + 18KB CSS)
+- API 冒烟测试: health / create / list / get 全部正常
+
+### 已修复的代码审查问题
+- DB session 生命周期: orchestrator 使用独立 session
+- 并发启动防护: `_active_sessions` set + 409 Conflict
+- 输入验证: Pydantic Field (topic 1-500字符, max_rounds 1-10, angle_ids 2-6)
+- seq 持久化: 从 DB 初始化 MAX(seq)
+- 错误消毒: 分类映射 timeout/auth/rate → 用户友好提示
+- Prompt 缓存: 模板模块级 `_PROMPT_TEMPLATE`
+- httpx 复用: 实例级 `_client` + `close()`
+
+### 待做 (V1.1+)
+- 填入真实 API key 做端到端联调 (需要 LLM_API_KEY)
+- SSE 队列泄漏防护 (bounded queue 或 TTL 清理)
+- SQLite → PostgreSQL (生产部署)
+- 搜索功能实际联调 (Zhipu MCP 或 Tavily)
+- 前端移动端适配
