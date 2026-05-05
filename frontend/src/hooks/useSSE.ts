@@ -9,14 +9,22 @@ export function useSSE(sessionId: string | null) {
   const [events, setEvents] = useState<SSEEvent[]>([]);
   const [connected, setConnected] = useState(false);
   const esRef = useRef<EventSource | null>(null);
+  const lastEventIdRef = useRef<string | null>(null);
 
   const connect = useCallback(() => {
     if (!sessionId) return;
 
-    // Close existing connection
     esRef.current?.close();
 
-    const url = `/api/sessions/${sessionId}/stream`;
+    // Include Last-Event-ID for reconnection replay
+    let url = `/api/sessions/${sessionId}/stream`;
+    const lastId = lastEventIdRef.current;
+    // EventSource doesn't send Last-Event-ID header directly on manual reconnect,
+    // but we include it as a query param as fallback
+    if (lastId) {
+      url += `?last_event_id=${encodeURIComponent(lastId)}`;
+    }
+
     const es = new EventSource(url);
     esRef.current = es;
 
@@ -24,24 +32,29 @@ export function useSSE(sessionId: string | null) {
     es.onerror = () => {
       setConnected(false);
       es.close();
-      // Auto-reconnect after 3s
       setTimeout(() => {
         if (esRef.current === es) connect();
       }, 3000);
     };
 
-    es.onmessage = (e) => {
-      if (e.data) {
-        try {
-          const event = JSON.parse(e.data) as SSEEvent;
-          setEvents((prev) => [...prev, event]);
-        } catch {
-          // Ignore non-JSON messages
+    const handleEvent = (e: MessageEvent) => {
+      if (!e.data) return;
+      try {
+        const event = JSON.parse(e.data) as SSEEvent;
+        setEvents((prev) => [...prev, event]);
+        // Track last event ID for reconnect
+        if (e.lastEventId) {
+          lastEventIdRef.current = e.lastEventId;
         }
+      } catch {
+        // Ignore non-JSON messages
       }
     };
 
-    // Also listen for typed events
+    // Listen for default message events
+    es.onmessage = handleEvent;
+
+    // Listen for typed events
     const eventTypes = [
       "discussion_start", "round_start", "agent_message_start",
       "agent_message_chunk", "agent_message_complete",
@@ -49,16 +62,7 @@ export function useSSE(sessionId: string | null) {
       "discussion_end", "error",
     ];
     for (const type of eventTypes) {
-      es.addEventListener(type, (e: MessageEvent) => {
-        if (e.data) {
-          try {
-            const event = JSON.parse(e.data) as SSEEvent;
-            setEvents((prev) => [...prev, event]);
-          } catch {
-            // Ignore
-          }
-        }
-      });
+      es.addEventListener(type, handleEvent);
     }
   }, [sessionId]);
 
@@ -70,7 +74,10 @@ export function useSSE(sessionId: string | null) {
     };
   }, [connect]);
 
-  const clearEvents = useCallback(() => setEvents([]), []);
+  const clearEvents = useCallback(() => {
+    setEvents([]);
+    lastEventIdRef.current = null;
+  }, []);
 
   return { events, connected, clearEvents };
 }
