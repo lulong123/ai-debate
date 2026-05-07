@@ -1,12 +1,18 @@
 """Tests for the orchestrator with mocked LLM calls."""
 
-import json
 from unittest.mock import patch
 
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
 from app.models.session import SessionStatus
+from app.models.schemas import (
+    DebateMinutes,
+    RoundJudgment,
+    ScoreResult,
+    ScoreEntry,
+    Verdict,
+)
 from app.services.orchestrator import Orchestrator
 from app.storage.database import Base
 from app.storage.repository import SessionRepository
@@ -38,54 +44,57 @@ async def _mock_stream_gen(text: str):
 
 
 async def test_orchestrator_full_flow(db: AsyncSession):
-    """Test a minimal discussion: 2 angles, 1 round, conclude."""
+    """Test a minimal debate: 2 positions, 1 round, conclude."""
     repo = SessionRepository(db)
     session = await repo.create_session("AI是否应该被监管", max_rounds=2)
-    angle1 = await repo.add_angle(session.id, "技术视角", "从技术角度分析")
-    angle2 = await repo.add_angle(session.id, "法律视角", "从法律角度分析")
+    pos1 = await repo.add_position(session.id, "支持", "认为应该推行监管")
+    pos2 = await repo.add_position(session.id, "反对", "认为不应该推行监管")
 
     call_count = {"n": 0}
 
-    # stream_completion is an async generator function, so the mock must
-    # return an async generator directly (not a coroutine that returns one).
     def mock_stream(*args, **kwargs):
-        return _mock_stream_gen("这是流式发言内容。")
+        return _mock_stream_gen("这是流式辩论内容。")
 
     async def mock_complete(*args, **kwargs):
         return "这是完整回复内容。"
 
-    async def mock_json(*args, **kwargs):
+    async def mock_typed(messages, response_model, model=None, **kwargs):
+        """Mock complete_typed that returns proper Pydantic model instances."""
         call_count["n"] += 1
         n = call_count["n"]
-        if n == 1:
-            return {"scores": [
-                {"angle_id": angle1.id, "angle_name": "技术视角", "total": 80,
-                 "dimensions": {"evidence": 85, "responsiveness": 75, "novelty": 80}, "comment": "不错"},
-                {"angle_id": angle2.id, "angle_name": "法律视角", "total": 75,
-                 "dimensions": {"evidence": 70, "responsiveness": 80, "novelty": 75}, "comment": "可以"},
-            ]}
-        elif n == 2:
-            return {"decision": "CONCLUDE", "reason": "讨论充分", "guidance": ""}
-        else:
-            return {
-                "core_conclusion": "AI需要适度监管",
-                "standpoints": [
-                    {"angle": "技术视角", "main_points": ["技术挑战大"], "position": "需要技术创新"},
-                    {"angle": "法律视角", "main_points": ["需要新框架"], "position": "需要法律创新"},
+        if response_model is ScoreResult:
+            if n <= 1:
+                return ScoreResult(scores=[
+                    ScoreEntry(position_id=pos1.id, position_name="支持", points=60, comment="论据充分"),
+                    ScoreEntry(position_id=pos2.id, position_name="反对", points=40, comment="反驳较弱"),
+                ])
+            return ScoreResult(scores=[
+                ScoreEntry(position_id=pos1.id, position_name="支持", points=55, comment=""),
+                ScoreEntry(position_id=pos2.id, position_name="反对", points=45, comment=""),
+            ])
+        if response_model is RoundJudgment:
+            return RoundJudgment(decision="CONCLUDE", reason="辩论充分", guidance="")
+        if response_model is DebateMinutes:
+            return DebateMinutes(
+                core_conclusion="支持方获胜",
+                position_arguments=[
+                    {"position": "支持", "main_points": ["需要监管框架"], "defense": "论据有力"},
+                    {"position": "反对", "main_points": ["创新受限"], "defense": "反驳不足"},
                 ],
-                "disagreements": ["监管力度"],
-                "actionable_items": ["建立AI监管沙盒"],
-                "summary": "讨论认为AI需要适度监管，需要技术和法律双轨并行。"
-            }
+                key_clashes=["监管与创新平衡"],
+                verdict=Verdict(winner="支持", rationale="论据更充分", score_summary="60:40"),
+                summary="支持方以充分论据获胜。",
+            )
+        # Fallback for any other model
+        return response_model()
 
-    # Patch at the source module AND at all import sites
     patches = [
         patch("app.services.llm.stream_completion", side_effect=mock_stream),
         patch("app.services.llm.complete", side_effect=mock_complete),
-        patch("app.services.llm.complete_json", side_effect=mock_json),
+        patch("app.services.llm.complete_typed", side_effect=mock_typed),
         patch("app.agents.base.stream_completion", side_effect=mock_stream),
         patch("app.agents.base.complete", side_effect=mock_complete),
-        patch("app.agents.base.complete_json", side_effect=mock_json),
+        patch("app.agents.base.complete_typed", side_effect=mock_typed),
         patch("app.services.orchestrator.publish"),
     ]
 
@@ -94,7 +103,7 @@ async def test_orchestrator_full_flow(db: AsyncSession):
 
     try:
         orch = Orchestrator(db)
-        await orch.start_discussion(session.id, [angle1.id, angle2.id])
+        await orch.start_discussion(session.id, [pos1.id, pos2.id])
     finally:
         for p in patches:
             p.stop()
@@ -102,7 +111,8 @@ async def test_orchestrator_full_flow(db: AsyncSession):
     session = await repo.get_session(session.id)
     assert session.status == SessionStatus.COMPLETED
     assert session.minutes is not None
-    assert session.minutes["core_conclusion"] == "AI需要适度监管"
+    assert session.minutes["core_conclusion"] == "支持方获胜"
+    assert session.minutes["verdict"]["winner"] == "支持"
 
     messages = await repo.get_messages(session.id)
     assert len(messages) >= 3

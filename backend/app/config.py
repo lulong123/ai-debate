@@ -5,9 +5,9 @@ class Settings(BaseSettings):
     """Application settings loaded from environment variables."""
 
     # LLM Configuration
-    llm_model: str = "glm-5.1"
+    llm_model: str = "openai/glm-5.1"
     llm_api_key: str = ""
-    llm_base_url: str = "https://open.bigmodel.cn/api/anthropic"
+    llm_base_url: str = "https://open.bigmodel.cn/api/paas/v4"
     llm_max_tokens: int = 4096
     llm_temperature: float = 0.7
 
@@ -23,6 +23,9 @@ class Settings(BaseSettings):
     search_provider: str = ""  # "zhipu" or "tavily"
     zhipu_search_api_key: str = ""
     tavily_api_key: str = ""
+
+    # Data Clerk (optional)
+    data_clerk_model: str = ""  # Uses default LLM model if empty
 
     # Server
     host: str = "0.0.0.0"

@@ -59,7 +59,8 @@ export function useSSE(sessionId: string | null) {
       "discussion_start", "round_start", "agent_message_start",
       "agent_message_chunk", "agent_message_complete",
       "score_update", "moderator_guidance", "round_complete",
-      "discussion_end", "error",
+      "discussion_end", "error", "data_fetch_start", "data_fetch_complete",
+      "user_data_added",
     ];
     for (const type of eventTypes) {
       es.addEventListener(type, handleEvent);

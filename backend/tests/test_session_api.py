@@ -72,7 +72,8 @@ async def test_refine_topic(client: AsyncClient):
     )
     assert resp.status_code == 200
     data = resp.json()
-    assert data["refined_topic"] == "澄清后的议题"
+    assert "原始议题" in data["refined_topic"]
+    assert "澄清后的议题" in data["refined_topic"]
 
 
 async def test_get_messages_empty(client: AsyncClient):

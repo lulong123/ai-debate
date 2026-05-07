@@ -3,12 +3,14 @@ import { useNavigate, useParams } from "react-router-dom";
 import { useSSE } from "../hooks/useSSE";
 import { ChatStream } from "../components/ChatStream";
 import { ScorePanel } from "../components/ScorePanel";
+import { DataPoolPanel } from "../components/DataPoolPanel";
 
 export function Discussion() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const { events, connected } = useSSE(sessionId || null);
-  const [showScores, setShowScores] = useState(true);
+  const [showScores, setShowScores] = useState(false);
+  const [showDataPool, setShowDataPool] = useState(true);
 
   const status = useMemo(() => {
     const lastEvent = events[events.length - 1];
@@ -25,11 +27,10 @@ export function Discussion() {
     return 0;
   }, [events]);
 
-  // Missing session ID guard
   if (!sessionId) {
     return (
       <div className="flex flex-col items-center justify-center py-20 gap-4">
-        <p className="text-neutral-400">无效的讨论链接</p>
+        <p className="text-neutral-400">无效的链接</p>
         <button
           onClick={() => navigate("/")}
           className="text-sm text-blue-400 hover:text-blue-300"
@@ -58,11 +59,11 @@ export function Discussion() {
           />
           <span className="text-sm text-neutral-400">
             {status === "discussing"
-              ? `讨论进行中 · 第 ${currentRound} 轮`
+              ? `辩论进行中 · 第 ${currentRound} 轮`
               : status === "completed"
-              ? "讨论已结束"
+              ? "辩论已结束"
               : status === "error"
-              ? "讨论出错"
+              ? "辩论出错"
               : "等待开始..."}
           </span>
           <span className="text-xs text-neutral-600">
@@ -70,6 +71,12 @@ export function Discussion() {
           </span>
         </div>
         <div className="flex gap-2">
+          <button
+            onClick={() => setShowDataPool(!showDataPool)}
+            className="text-xs text-neutral-500 hover:text-neutral-300 px-2 py-1 border border-neutral-800 rounded"
+          >
+            {showDataPool ? "隐藏数据池" : "数据池"}
+          </button>
           <button
             onClick={() => setShowScores(!showScores)}
             className="text-xs text-neutral-500 hover:text-neutral-300 px-2 py-1 border border-neutral-800 rounded"
@@ -81,7 +88,7 @@ export function Discussion() {
               onClick={() => navigate(`/minutes/${sessionId}`)}
               className="text-xs bg-blue-600 hover:bg-blue-700 text-white px-3 py-1 rounded"
             >
-              查看纪要
+              查看裁决
             </button>
           )}
           {status === "error" && (
@@ -99,20 +106,22 @@ export function Discussion() {
       {status === "error" && (
         <div className="bg-red-950/50 border border-red-900/50 rounded-lg p-3 mb-3">
           <p className="text-sm text-red-300">
-            {(events[events.length - 1]?.message as string) || "讨论过程中发生错误"}
+            {(events[events.length - 1]?.message as string) || "辩论过程中发生错误"}
           </p>
-          <p className="text-xs text-red-400/70 mt-1">你可以返回首页开始新的讨论</p>
+          <p className="text-xs text-red-400/70 mt-1">你可以返回首页开始新的辩论</p>
         </div>
       )}
 
-      {/* Main content - responsive layout */}
+      {/* Main content */}
       <div className="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
-        {/* Chat area */}
         <div className="flex-1 min-w-0">
           <ChatStream events={events} />
         </div>
-
-        {/* Score panel - hidden on small screens unless toggled */}
+        {showDataPool && sessionId && (
+          <div className="w-full md:w-80 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-none">
+            <DataPoolPanel sessionId={sessionId} events={events} isActive={showDataPool} />
+          </div>
+        )}
         {showScores && (
           <div className="w-full md:w-72 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-none">
             <ScorePanel events={events} />

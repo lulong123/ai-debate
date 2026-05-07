@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.session import Angle, DiscussionSession, Message, SessionStatus
+from app.models.session import Message, DiscussionSession, Position, SessionStatus, DataPoolItem
 
 
 class SessionRepository:
@@ -38,18 +38,15 @@ class SessionRepository:
         )
         return list(result.scalars().all())
 
-    async def add_angle(self, session_id: str, name: str, description: str, is_custom: bool = False) -> Angle:
-        angle = Angle(session_id=session_id, name=name, description=description, is_custom=is_custom)
-        self.db.add(angle)
+    async def add_position(self, session_id: str, name: str, description: str, is_custom: bool = False, position_id: str | None = None) -> Position:
+        position = Position(id=position_id, session_id=session_id, name=name, description=description, is_custom=is_custom)
+        self.db.add(position)
         await self.db.commit()
-        return angle
+        return position
 
-    async def get_active_angles(self, session_id: str) -> list[Angle]:
+    async def get_active_positions(self, session_id: str) -> list[Position]:
         result = await self.db.execute(
-            select(Angle).where(
-                Angle.session_id == session_id,
-                Angle.conceded == False,  # noqa: E712
-            )
+            select(Position).where(Position.session_id == session_id)
         )
         return list(result.scalars().all())
 
@@ -58,5 +55,25 @@ class SessionRepository:
             select(DiscussionSession)
             .order_by(DiscussionSession.created_at.desc())
             .limit(limit)
+        )
+        return list(result.scalars().all())
+
+    async def add_data_pool_item(
+        self, session_id: str, source: str, title: str,
+        snippet: str = "", url: str = "", round_number: int | None = None,
+    ) -> DataPoolItem:
+        item = DataPoolItem(
+            session_id=session_id, source=source, title=title,
+            snippet=snippet, url=url, round_number=round_number,
+        )
+        self.db.add(item)
+        await self.db.commit()
+        return item
+
+    async def get_data_pool(self, session_id: str) -> list[DataPoolItem]:
+        result = await self.db.execute(
+            select(DataPoolItem)
+            .where(DataPoolItem.session_id == session_id)
+            .order_by(DataPoolItem.created_at)
         )
         return list(result.scalars().all())

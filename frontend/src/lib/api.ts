@@ -32,22 +32,25 @@ export interface ClarifyResponse {
   suggestion: string;
 }
 
-export interface AngleSuggestion {
+export interface PositionSuggestion {
   id: string;
   name: string;
   description: string;
 }
 
-export interface SuggestAnglesResponse {
+export interface SuggestPositionsResponse {
   session_id: string;
-  angles: AngleSuggestion[];
+  positions: PositionSuggestion[];
+  data_clerk_recommended: boolean;
+  data_clerk_reason: string;
+  preliminary_data: Array<{ title: string; snippet: string; url: string }> | null;
 }
 
 export interface MessageResponse {
   id: string;
   role: string;
   agent_name: string | null;
-  angle_id: string | null;
+  position_id: string | null;
   round_number: number | null;
   content: string;
   scores: Record<string, unknown> | null;
@@ -58,9 +61,17 @@ export interface MinutesResponse {
   session_id: string;
   minutes: {
     core_conclusion: string;
-    standpoints: Array<{ angle: string; main_points: string[]; position: string }>;
-    disagreements: string[];
-    actionable_items: string[];
+    position_arguments: Array<{
+      position: string;
+      main_points: string[];
+      defense: string;
+    }>;
+    key_clashes: string[];
+    verdict: {
+      winner: string;
+      rationale: string;
+      score_summary: string;
+    };
     summary: string;
   } | null;
 }
@@ -99,19 +110,24 @@ export async function refineTopic(sessionId: string, answer: string): Promise<{ 
   });
 }
 
-export async function suggestAngles(sessionId: string): Promise<SuggestAnglesResponse> {
-  return request<SuggestAnglesResponse>(`${API_BASE}/sessions/${sessionId}/suggest-angles`, { method: "POST" });
+export async function suggestPositions(sessionId: string): Promise<SuggestPositionsResponse> {
+  return request<SuggestPositionsResponse>(`${API_BASE}/sessions/${sessionId}/suggest-positions`, { method: "POST" });
 }
 
 export async function startDiscussion(
   sessionId: string,
-  angleIds: string[],
-  customAngles?: { name: string; description: string }[]
+  positionIds: string[],
+  customPositions?: { name: string; description: string }[],
+  enableDataClerk?: boolean
 ): Promise<{ session_id: string; status: string }> {
   return request(`${API_BASE}/sessions/${sessionId}/start`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ angle_ids: angleIds, custom_angles: customAngles || null }),
+    body: JSON.stringify({
+      position_ids: positionIds,
+      custom_positions: customPositions || null,
+      enable_data_clerk: enableDataClerk ?? false,
+    }),
   });
 }
 
@@ -121,4 +137,26 @@ export async function getMinutes(sessionId: string): Promise<MinutesResponse> {
 
 export async function getMessages(sessionId: string): Promise<MessageResponse[]> {
   return request<MessageResponse[]>(`${API_BASE}/sessions/${sessionId}/messages`);
+}
+
+export interface DataPoolItem {
+  id: string;
+  source: "data_clerk" | "user";
+  title: string;
+  snippet: string;
+  url: string;
+  round_number: number | null;
+}
+
+export async function addUserData(
+  sessionId: string,
+  title: string,
+  content: string,
+  url?: string
+): Promise<{ id: string; status: string }> {
+  return request(`${API_BASE}/sessions/${sessionId}/data-pool`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ title, content, url: url || "" }),
+  });
 }

@@ -3,12 +3,16 @@
 import json
 import logging
 from collections.abc import AsyncGenerator
+from typing import TypeVar
 
 import litellm
+from pydantic import BaseModel, ValidationError
 
 from app.config import settings
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T", bound=BaseModel)
 
 # Suppress litellm's verbose logging
 litellm.suppress_debug_info = True
@@ -75,10 +79,25 @@ async def complete_json(
     messages: list[dict],
     model: str | None = None,
 ) -> dict:
-    """Complete and parse JSON response. Returns {} on parse failure."""
-    text = await complete(messages, model=model, temperature=0.3)
+    """Complete with forced JSON mode. Returns {} on parse failure."""
+    model_name = model or settings.llm_model
+    api_base = settings.llm_base_url or None
+
+    response = await litellm.acompletion(
+        model=model_name,
+        messages=messages,
+        temperature=0.3,
+        max_tokens=settings.llm_max_tokens,
+        stream=False,
+        api_key=settings.llm_api_key or None,
+        api_base=api_base,
+        timeout=120,
+        response_format={"type": "json_object"},
+    )
+
+    text = response.choices[0].message.content or ""
     try:
-        # Try to extract JSON from markdown code blocks
+        # Extract JSON from markdown code blocks if present
         if "```json" in text:
             text = text.split("```json")[1].split("```")[0]
         elif "```" in text:
@@ -87,3 +106,39 @@ async def complete_json(
     except (json.JSONDecodeError, IndexError):
         logger.warning("Failed to parse JSON response: %s", text[:200])
         return {}
+
+
+async def complete_typed(
+    messages: list[dict],
+    response_model: type[T],
+    model: str | None = None,
+) -> T:
+    """Complete with forced JSON mode, validate against Pydantic model.
+
+    Falls back to model defaults if validation fails.
+    """
+    model_name = model or settings.llm_model
+    api_base = settings.llm_base_url or None
+
+    response = await litellm.acompletion(
+        model=model_name,
+        messages=messages,
+        temperature=0.3,
+        max_tokens=settings.llm_max_tokens,
+        stream=False,
+        api_key=settings.llm_api_key or None,
+        api_base=api_base,
+        timeout=120,
+        response_format={"type": "json_object"},
+    )
+
+    text = response.choices[0].message.content or ""
+    try:
+        data = json.loads(text.strip())
+        return response_model.model_validate(data)
+    except (json.JSONDecodeError, ValidationError) as e:
+        logger.warning(
+            "Failed to parse/validate typed response (%s): %s | text: %s",
+            response_model.__name__, e, text[:200],
+        )
+        return response_model()

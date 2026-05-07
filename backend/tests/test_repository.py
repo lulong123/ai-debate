@@ -3,7 +3,7 @@
 import pytest
 from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
 
-from app.models.session import Angle, DiscussionSession, Message, MessageRole, SessionStatus
+from app.models.session import Position, DiscussionSession, Message, MessageRole, SessionStatus
 from app.storage.database import Base
 from app.storage.repository import SessionRepository
 
@@ -57,22 +57,22 @@ async def test_add_and_get_messages(db: AsyncSession):
     await repo.add_message(session.id, seq=1, role=MessageRole.MODERATOR, content="开场白")
     await repo.add_message(
         session.id, seq=2, role=MessageRole.PERSPECTIVE,
-        content="嘉宾发言", agent_name="法律视角", round_number=1
+        content="辩手发言", agent_name="支持方", round_number=1
     )
     msgs = await repo.get_messages(session.id)
     assert len(msgs) == 2
     assert msgs[0].content == "开场白"
-    assert msgs[1].agent_name == "法律视角"
+    assert msgs[1].agent_name == "支持方"
 
 
-async def test_add_and_get_angles(db: AsyncSession):
+async def test_add_and_get_positions(db: AsyncSession):
     repo = SessionRepository(db)
-    session = await repo.create_session("角度测试")
-    await repo.add_angle(session.id, "法律视角", "从法律角度分析")
-    await repo.add_angle(session.id, "技术视角", "从技术角度分析")
-    angles = await repo.get_active_angles(session.id)
-    assert len(angles) == 2
-    assert angles[0].name == "法律视角"
+    session = await repo.create_session("立场测试")
+    await repo.add_position(session.id, "支持", "认为应该推行")
+    await repo.add_position(session.id, "反对", "认为不应该推行")
+    positions = await repo.get_active_positions(session.id)
+    assert len(positions) == 2
+    assert positions[0].name == "支持"
 
 
 async def test_list_sessions(db: AsyncSession):

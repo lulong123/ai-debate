@@ -18,7 +18,7 @@ def utcnow() -> datetime:
 
 class SessionStatus(str, enum.Enum):
     CLARIFYING = "clarifying"
-    SELECTING_ANGLES = "selecting_angles"
+    SELECTING_POSITIONS = "selecting_positions"
     DISCUSSING = "discussing"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -38,24 +38,28 @@ class DiscussionSession(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
     completed_at: Mapped[datetime] = mapped_column(DateTime, nullable=True)
     minutes: Mapped[dict | None] = mapped_column(JSON, nullable=True)
+    has_data_clerk: Mapped[bool] = mapped_column(default=False)
+    preliminary_data: Mapped[dict | None] = mapped_column(JSON, nullable=True)
 
     messages: Mapped[list["Message"]] = relationship(
         back_populates="session", order_by="Message.seq"
     )
-    angles: Mapped[list["Angle"]] = relationship(back_populates="session")
+    positions: Mapped[list["Position"]] = relationship(back_populates="session")
+    data_pool: Mapped[list["DataPoolItem"]] = relationship(
+        back_populates="session", order_by="DataPoolItem.created_at"
+    )
 
 
-class Angle(Base):
-    __tablename__ = "angles"
+class Position(Base):
+    __tablename__ = "positions"
 
     id: Mapped[str] = mapped_column(String(12), primary_key=True, default=new_id)
     session_id: Mapped[str] = mapped_column(String(12), ForeignKey("sessions.id"))
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     description: Mapped[str] = mapped_column(Text, nullable=False)
     is_custom: Mapped[bool] = mapped_column(default=False)
-    conceded: Mapped[bool] = mapped_column(default=False)
 
-    session: Mapped["DiscussionSession"] = relationship(back_populates="angles")
+    session: Mapped["DiscussionSession"] = relationship(back_populates="positions")
 
 
 class MessageRole(str, enum.Enum):
@@ -73,10 +77,35 @@ class Message(Base):
     seq: Mapped[int] = mapped_column(Integer, nullable=False)
     role: Mapped[MessageRole] = mapped_column(Enum(MessageRole), nullable=False)
     agent_name: Mapped[str] = mapped_column(String(50), nullable=True)
-    angle_id: Mapped[str] = mapped_column(String(12), nullable=True)
+    position_id: Mapped[str] = mapped_column(String(12), nullable=True)
     round_number: Mapped[int] = mapped_column(Integer, nullable=True)
     content: Mapped[str] = mapped_column(Text, nullable=False)
     scores: Mapped[dict | None] = mapped_column(JSON, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
     session: Mapped["DiscussionSession"] = relationship(back_populates="messages")
+
+
+class DataPoolItem(Base):
+    __tablename__ = "data_pool"
+
+    id: Mapped[str] = mapped_column(String(16), primary_key=True, default=new_id)
+    session_id: Mapped[str] = mapped_column(String(12), ForeignKey("sessions.id"))
+    source: Mapped[str] = mapped_column(String(20), nullable=False)  # "data_clerk" or "user"
+    title: Mapped[str] = mapped_column(String(200), nullable=False)
+    snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    round_number: Mapped[int] = mapped_column(Integer, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
+
+    session: Mapped["DiscussionSession"] = relationship(back_populates="data_pool")
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "source": self.source,
+            "title": self.title,
+            "snippet": self.snippet,
+            "url": self.url,
+            "round_number": self.round_number,
+        }

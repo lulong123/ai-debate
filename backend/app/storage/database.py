@@ -1,3 +1,4 @@
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 from sqlalchemy.orm import DeclarativeBase
 
@@ -14,6 +15,17 @@ class Base(DeclarativeBase):
 async def init_db():
     async with engine.begin() as conn:
         await conn.run_sync(Base.metadata.create_all)
+        # Idempotent migration for existing databases
+        result = await conn.execute(text("PRAGMA table_info(sessions)"))
+        columns = [row[1] for row in result]
+        if "has_data_clerk" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE sessions ADD COLUMN has_data_clerk BOOLEAN DEFAULT 0"
+            ))
+        if "preliminary_data" not in columns:
+            await conn.execute(text(
+                "ALTER TABLE sessions ADD COLUMN preliminary_data JSON"
+            ))
 
 
 async def get_db():

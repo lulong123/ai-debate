@@ -1,4 +1,4 @@
-__all__ = ["Angle", "DiscussionSession", "Message", "MessageRole", "SessionStatus"]
+__all__ = ["DataPoolItem", "Position", "DiscussionSession", "Message", "MessageRole", "SessionStatus"]
 
 
 def __getattr__(name):

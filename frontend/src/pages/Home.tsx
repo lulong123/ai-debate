@@ -20,7 +20,7 @@ export function Home() {
       const { session_id } = await createSession(topic.trim());
       const result = await clarifyTopic(session_id);
       if (result.valid) {
-        navigate(`/angles/${session_id}`);
+        navigate(`/positions/${session_id}`);
       } else {
         setClarification({ question: result.question, sessionId: session_id });
       }
@@ -38,7 +38,7 @@ export function Home() {
     try {
       await refineTopic(clarification.sessionId, answer);
       setClarification(null);
-      navigate(`/angles/${clarification.sessionId}`);
+      navigate(`/positions/${clarification.sessionId}`);
     } catch {
       setError("提交失败，请检查网络连接后重试");
     } finally {
@@ -66,9 +66,9 @@ export function Home() {
   return (
     <div className="max-w-2xl mx-auto px-4 sm:px-0">
       <div className="text-center mb-8">
-        <h2 className="text-3xl font-bold mb-2">开始一场讨论</h2>
+        <h2 className="text-3xl font-bold mb-2">开始一场辩论</h2>
         <p className="text-neutral-400">
-          提交一个议题，让多个 AI 角度协作分析，帮你做出更好的判断
+          提交一个问题，让多个 AI 立场辩论对决，帮你做出更好的判断
         </p>
       </div>
 
@@ -81,7 +81,7 @@ export function Home() {
         <textarea
           value={topic}
           onChange={(e) => setTopic(e.target.value)}
-          placeholder="输入你想讨论的议题...&#10;&#10;例如：该不该禁止 AI 生成深度伪造内容？"
+          placeholder="输入你想辩论的问题...&#10;&#10;例如：谁是历史第一足球运动员？"
           className="w-full h-32 bg-neutral-800 border border-neutral-700 rounded-lg p-4 text-neutral-100 placeholder-neutral-500 resize-none focus:outline-none focus:border-blue-500"
           disabled={loading}
         />
@@ -90,7 +90,7 @@ export function Home() {
           disabled={loading || !topic.trim()}
           className="mt-4 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-neutral-700 disabled:text-neutral-500 text-white font-medium py-3 rounded-lg transition-colors"
         >
-          {loading ? "分析中..." : "提交议题"}
+          {loading ? "分析中..." : "提交问题"}
         </button>
       </div>
     </div>
