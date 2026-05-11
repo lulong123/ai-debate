@@ -3,14 +3,19 @@
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.agents.data_clerk import DataClerkAgent, MAX_QUERIES, MAX_TOTAL_RESULTS
+import json
+
+from app.agents.data_clerk import MAX_QUERIES, MAX_TOTAL_RESULTS, DataClerkAgent
 from app.models.schemas import (
+    AgentThinking,
+    CrossValidatedFacts,
     DebateMinutes,
+    ExtractedFacts,
     RoundJudgment,
-    ScoreResult,
     ScoreEntry,
+    ScoreResult,
     SearchQueries,
     Verdict,
 )
@@ -114,7 +119,11 @@ async def _make_mock_typed(pos1_id, pos2_id):
 
     async def mock_typed(messages, response_model, model=None, **kwargs):
         call_count["n"] += 1
-        n = call_count["n"]
+        if response_model is AgentThinking:
+            return AgentThinking(
+                thinking="分析当前辩论局势...",
+                data_need="需要测试数据",
+            )
         if response_model is SearchQueries:
             return SearchQueries(searches=["测试查询"])
         if response_model is ScoreResult:
@@ -246,3 +255,143 @@ async def test_orchestrator_without_data_clerk(db: AsyncSession):
 
     fetch_events = [e for e in emitted_events if "data_fetch" in e.get("type", "")]
     assert len(fetch_events) == 0
+
+
+# --- Extraction pipeline tests ---
+
+
+async def test_extract_facts_success():
+    """extract_facts should fetch page content and extract structured facts via LLM."""
+    clerk = DataClerkAgent()
+    with patch("app.agents.data_clerk.fetch_page_content", new_callable=AsyncMock) as mock_fetch, \
+         patch.object(clerk, "respond_typed", new_callable=AsyncMock) as mock_typed:
+        mock_fetch.return_value = "哈登在今天的比赛中得到35分8篮板10助攻。火箭队以120-115获胜。"
+        mock_typed.return_value = ExtractedFacts(
+            key_facts=["哈登得到35分8篮板10助攻", "火箭队以120-115获胜"],
+            summary="哈登全场最佳表现",
+        )
+        result = await clerk.extract_facts("https://example.com/game", "哈登 数据")
+        assert len(result.key_facts) == 2
+        assert "35分" in result.key_facts[0]
+        assert result.summary == "哈登全场最佳表现"
+
+
+async def test_extract_facts_jina_timeout():
+    """extract_facts should return empty facts when Jina fetch fails."""
+    clerk = DataClerkAgent()
+    with patch("app.agents.data_clerk.fetch_page_content", new_callable=AsyncMock) as mock_fetch:
+        mock_fetch.return_value = ""
+        result = await clerk.extract_facts("https://example.com/timeout", "query")
+        assert result.key_facts == []
+        assert result.summary == ""
+
+
+async def test_extract_facts_llm_failure():
+    """extract_facts should fallback to raw_content when LLM extraction fails."""
+    clerk = DataClerkAgent()
+    with patch("app.agents.data_clerk.fetch_page_content", new_callable=AsyncMock) as mock_fetch, \
+         patch.object(clerk, "respond_typed", new_callable=AsyncMock) as mock_typed:
+        mock_fetch.return_value = "这是一些网页内容，包含相关信息。"
+        mock_typed.side_effect = Exception("LLM failed")
+        result = await clerk.extract_facts("https://example.com/page", "query")
+        # Fallback: first 200 chars as a single fact
+        assert len(result.key_facts) == 1
+        assert "网页内容" in result.key_facts[0]
+
+
+async def test_extract_facts_batch_parallel():
+    """extract_facts_batch should process multiple URLs in parallel."""
+    clerk = DataClerkAgent()
+    results = [
+        {"title": "Article 1", "snippet": "s1", "url": "https://a.com/1"},
+        {"title": "Article 2", "snippet": "s2", "url": "https://b.com/2"},
+        {"title": "No URL", "snippet": "s3", "url": ""},
+    ]
+
+    async def mock_extract_facts(url, query, fallback_content=""):
+        if "a.com" in url:
+            return ExtractedFacts(key_facts=["fact A1", "fact A2"], summary="Summary A")
+        return ExtractedFacts(key_facts=["fact B1"], summary="Summary B")
+
+    with patch.object(clerk, "extract_facts", side_effect=mock_extract_facts):
+        enriched = await clerk.extract_facts_batch(results, "test query")
+    assert len(enriched) == 3
+    # First two have key_facts enriched
+    assert json.loads(enriched[0]["key_facts"])["key_facts"] == ["fact A1", "fact A2"]
+    assert json.loads(enriched[1]["key_facts"])["key_facts"] == ["fact B1"]
+    # Third has no URL but has snippet fallback, so it also gets extraction
+    assert "key_facts" in enriched[2]
+
+
+async def test_cross_validate_matching_facts():
+    """cross_validate_facts should identify validated facts from multiple sources."""
+    clerk = DataClerkAgent()
+    enriched = [
+        {
+            "title": "Source A",
+            "key_facts": json.dumps({"key_facts": ["哈登得到35分", "火箭获胜"], "summary": ""}),
+        },
+        {
+            "title": "Source B",
+            "key_facts": json.dumps({"key_facts": ["哈登砍下35分", "火箭队赢球"], "summary": ""}),
+        },
+    ]
+    with patch.object(clerk, "respond_typed", new_callable=AsyncMock) as mock_typed:
+        mock_typed.return_value = CrossValidatedFacts(
+            validated=[{"fact": "哈登得到35分", "source_count": 2}],
+            unique=[],
+            contradictions=[],
+            note="两个来源均确认哈登35分",
+        )
+        result = await clerk.cross_validate_facts(enriched, "哈登 数据")
+        assert len(result.validated) == 1
+        assert result.validated[0]["source_count"] == 2
+
+
+async def test_cross_validate_empty():
+    """cross_validate_facts should return empty result when no facts available."""
+    clerk = DataClerkAgent()
+    enriched = [
+        {"title": "Empty", "key_facts": ""},
+        {"title": "No facts", "key_facts": json.dumps({"key_facts": [], "summary": ""})},
+    ]
+    result = await clerk.cross_validate_facts(enriched, "query")
+    assert result.validated == []
+    assert result.unique == []
+
+
+async def test_cross_validate_failure():
+    """cross_validate_facts should return empty result on LLM failure."""
+    clerk = DataClerkAgent()
+    enriched = [
+        {
+            "title": "Source",
+            "key_facts": json.dumps({"key_facts": ["fact1"], "summary": ""}),
+        },
+    ]
+    with patch.object(clerk, "respond_typed", new_callable=AsyncMock) as mock_typed:
+        mock_typed.side_effect = Exception("LLM error")
+        result = await clerk.cross_validate_facts(enriched, "query")
+        assert result.validated == []
+
+
+async def test_data_pool_item_with_key_facts(db: AsyncSession):
+    """DataPoolItem should persist and retrieve key_facts field."""
+    repo = SessionRepository(db)
+    session = await repo.create_session("test topic")
+    key_facts_json = json.dumps(
+        {"key_facts": ["fact1", "fact2"], "summary": "test summary"},
+        ensure_ascii=False,
+    )
+    item = await repo.add_data_pool_item(
+        session_id=session.id,
+        source="data_clerk",
+        title="Test Article",
+        snippet="Test snippet",
+        url="https://example.com",
+        key_facts=key_facts_json,
+    )
+    assert item.key_facts == key_facts_json
+    # Verify to_dict includes key_facts
+    d = item.to_dict()
+    assert d["key_facts"] == key_facts_json

@@ -1,10 +1,9 @@
 """Tests for SSE event bus (publish/subscribe/history)."""
 
-import asyncio
 
 import pytest
 
-from app.routers.sse import subscribe, unsubscribe, publish, _SUBSCRIBERS, _HISTORY
+from app.routers.sse import _HISTORY, _SUBSCRIBERS, publish, subscribe, unsubscribe
 
 
 @pytest.fixture(autouse=True)

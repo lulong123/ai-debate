@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import DateTime, Enum, ForeignKey, Integer, String, Text, JSON
+from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.storage.database import Base
@@ -95,6 +95,7 @@ class DataPoolItem(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
     url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    key_facts: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: extracted key facts
     round_number: Mapped[int] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -107,5 +108,6 @@ class DataPoolItem(Base):
             "title": self.title,
             "snippet": self.snippet,
             "url": self.url,
+            "key_facts": self.key_facts,
             "round_number": self.round_number,
         }

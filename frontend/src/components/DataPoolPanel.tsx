@@ -11,6 +11,7 @@ interface DataItem {
   round_number: number | null;
   agent_name?: string;
   citationNum?: number;
+  keyFacts?: string[];
 }
 
 interface DataPoolPanelProps {
@@ -35,19 +36,29 @@ export function DataPoolPanel({ sessionId, events, isActive }: DataPoolPanelProp
 
     for (const event of newEvents) {
       if (event.type === "data_fetch_complete") {
-        const results = (event.results as Array<{ title: string; snippet: string; url: string }>) ?? [];
+        const results = (event.results as Array<{ title: string; snippet: string; url: string; key_facts?: string }>) ?? [];
         const round = event.round as number;
         const agentName = event.agent_name as string;
-        const newItems: DataItem[] = results.map((r, i) => ({
-          id: `dc_${round}_${event.message_id}_${i}`,
-          source: "data_clerk" as const,
-          title: r.title,
-          snippet: r.snippet,
-          url: r.url,
-          round_number: round,
-          agent_name: agentName,
-          citationNum: ++citationCounter.current,
-        }));
+        const newItems: DataItem[] = results.map((r, i) => {
+          let keyFacts: string[] | undefined;
+          if (r.key_facts) {
+            try {
+              const parsed = JSON.parse(r.key_facts);
+              keyFacts = parsed.key_facts;
+            } catch { /* ignore */ }
+          }
+          return {
+            id: `dc_${round}_${event.message_id}_${i}`,
+            source: "data_clerk" as const,
+            title: r.title,
+            snippet: r.snippet,
+            url: r.url,
+            round_number: round,
+            agent_name: agentName,
+            citationNum: ++citationCounter.current,
+            keyFacts,
+          };
+        });
         setItems((prev) => [...prev, ...newItems]);
       }
 
@@ -139,12 +150,25 @@ export function DataPoolPanel({ sessionId, events, isActive }: DataPoolPanelProp
                     </span>
                     <span className="font-medium text-neutral-300">{item.title}</span>
                   </div>
-                  <p
-                    className={`text-neutral-400 mt-1 cursor-pointer ${!isExpanded ? "line-clamp-2" : ""}`}
-                    onClick={() => toggleExpand(item.id)}
-                  >
-                    {item.snippet}
-                  </p>
+                  {item.keyFacts && item.keyFacts.length > 0 ? (
+                    <ul className={`text-neutral-400 mt-1 space-y-0.5 ${!isExpanded ? "line-clamp-3" : ""}`}
+                        onClick={() => toggleExpand(item.id)}
+                    >
+                      {item.keyFacts.slice(0, isExpanded ? undefined : 2).map((fact, fi) => (
+                        <li key={fi} className="flex gap-1 text-xs">
+                          <span className="text-amber-400 shrink-0">•</span>
+                          <span>{fact.length > 80 ? fact.slice(0, 80) + "..." : fact}</span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p
+                      className={`text-neutral-400 mt-1 cursor-pointer ${!isExpanded ? "line-clamp-2" : ""}`}
+                      onClick={() => toggleExpand(item.id)}
+                    >
+                      {item.snippet}
+                    </p>
+                  )}
                   {item.url && (
                     <a
                       href={item.url}

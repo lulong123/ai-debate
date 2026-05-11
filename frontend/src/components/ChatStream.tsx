@@ -19,12 +19,17 @@ interface AgentMessage {
   complete: boolean;
   isDataFetch?: boolean;
   resultCount?: number;
+  dataNeed?: string;
+  searchQueries?: string[];
+  thinking?: string;
+  thinkingExpanded?: boolean;
 }
 
 interface DataPoolEntry {
   title: string;
   snippet: string;
   url: string;
+  keyFacts?: string[];
 }
 
 interface ChatStreamProps {
@@ -88,9 +93,20 @@ function CitationText({ text, poolMap }: { text: string; poolMap: Map<number, Da
                 onClick={(e) => e.stopPropagation()}
               >
                 <div className="text-xs font-semibold text-blue-400 mb-1">{entry.title}</div>
-                <p className="text-xs text-neutral-300 leading-relaxed mb-1.5">
-                  {entry.snippet.slice(0, 200)}{entry.snippet.length > 200 ? "..." : ""}
-                </p>
+                {entry.keyFacts && entry.keyFacts.length > 0 ? (
+                  <ul className="text-xs text-neutral-300 leading-relaxed mb-1.5 space-y-0.5">
+                    {entry.keyFacts.slice(0, 5).map((fact, fi) => (
+                      <li key={fi} className="flex gap-1">
+                        <span className="text-amber-400 shrink-0">•</span>
+                        <span>{fact.length > 100 ? fact.slice(0, 100) + "..." : fact}</span>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="text-xs text-neutral-300 leading-relaxed mb-1.5">
+                    {entry.snippet.slice(0, 200)}{entry.snippet.length > 200 ? "..." : ""}
+                  </p>
+                )}
                 {entry.url && (
                   <a
                     href={entry.url}
@@ -123,6 +139,9 @@ export function ChatStream({ events }: ChatStreamProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const poolProcessedRef = useRef(0);
   const msgProcessedRef = useRef(0);
+  // Pending thinking: keyed by "agentId_round", stores thinking text
+  // until agent_message_start arrives and we can attach it to the real message
+  const pendingThinking = useRef<Map<string, { thinking: string; agentName: string }>>(new Map());
 
   // Build data pool map from SSE events
   useEffect(() => {
@@ -148,9 +167,16 @@ export function ChatStream({ events }: ChatStreamProps) {
       let idx = 1;
       for (const event of events) {
         if (event.type === "data_fetch_complete") {
-          const results = (event.results as Array<{ title: string; snippet: string; url: string }>) ?? [];
+          const results = (event.results as Array<{ title: string; snippet: string; url: string; key_facts?: string }>) ?? [];
           for (const r of results) {
-            newPool.set(idx++, { title: r.title, snippet: r.snippet, url: r.url });
+            let keyFacts: string[] | undefined;
+            if (r.key_facts) {
+              try {
+                const parsed = JSON.parse(r.key_facts);
+                keyFacts = parsed.key_facts;
+              } catch { /* ignore */ }
+            }
+            newPool.set(idx++, { title: r.title, snippet: r.snippet, url: r.url, keyFacts });
           }
         }
         if (event.type === "user_data_added") {
@@ -195,18 +221,27 @@ export function ChatStream({ events }: ChatStreamProps) {
 
       if (event.type === "agent_message_start") {
         const id = event.message_id as string;
+        const agentId = event.agent as string;
+        const round = event.round as number;
+        const thinkKey = `${agentId}_${round}`;
+        const pending = pendingThinking.current.get(thinkKey);
         setMessages((prev) => {
           const next = new Map(prev);
           next.set(id, {
             id,
             agentName: event.agent_name as string,
-            positionId: event.agent as string,
+            positionId: agentId,
             content: "",
-            round: event.round as number,
+            round,
             complete: false,
+            thinking: pending?.thinking,
+            thinkingExpanded: !!pending,
           });
           return next;
         });
+        if (pending) {
+          pendingThinking.current.delete(thinkKey);
+        }
         setDisplayOrder((prev) => prev.includes(id) ? prev : [...prev, id]);
       }
 
@@ -257,16 +292,20 @@ export function ChatStream({ events }: ChatStreamProps) {
 
       if (event.type === "data_fetch_start") {
         const id = event.message_id as string;
+        const dataNeed = (event.data_need as string) ?? "";
         setMessages((prev) => {
           const next = new Map(prev);
           next.set(id, {
             id,
             agentName: `数据研究员 → ${(event.agent_name as string) ?? ""}`,
             positionId: event.agent as string,
-            content: "",
+            content: dataNeed.length > 0
+              ? `正在搜索：${dataNeed}`
+              : "正在搜索相关数据...",
             round: event.round as number,
             complete: false,
             isDataFetch: true,
+            dataNeed,
           });
           return next;
         });
@@ -290,6 +329,84 @@ export function ChatStream({ events }: ChatStreamProps) {
           });
           return next;
         });
+      }
+
+      // Handle search queries during debate — update existing data_fetch message
+      if (event.type === "search_queries") {
+        const round = event.round as number;
+        const queries = (event.queries as string[]) ?? [];
+        setMessages((prev) => {
+          const next = new Map(prev);
+          // Find the data_fetch message for this agent/round
+          for (const [id, msg] of next) {
+            if (msg.isDataFetch && msg.round === round && !msg.complete) {
+              next.set(id, {
+                ...msg,
+                content: queries.length > 0
+                  ? `搜索关键词：${queries.join("、")}`
+                  : msg.content,
+                searchQueries: queries,
+              });
+              break;
+            }
+          }
+          return next;
+        });
+      }
+
+      // Handle search results during debate — update existing data_fetch message
+      if (event.type === "search_results") {
+        const round = event.round as number;
+        const results = (event.results as Array<{ title: string; snippet: string; url: string }>) ?? [];
+        setMessages((prev) => {
+          const next = new Map(prev);
+          for (const [id, msg] of next) {
+            if (msg.isDataFetch && msg.round === round && !msg.complete) {
+              const queryLabel = msg.searchQueries?.length
+                ? `关键词：${msg.searchQueries.join("、")}`
+                : "";
+              const resultItems = results
+                .slice(0, 3)
+                .map((r) => r.title)
+                .join("、");
+              next.set(id, {
+                ...msg,
+                content: queryLabel
+                  ? `${queryLabel}\n找到 ${results.length} 条结果：${resultItems}`
+                  : `找到 ${results.length} 条结果：${resultItems}`,
+              });
+              break;
+            }
+          }
+          return next;
+        });
+      }
+
+      // Handle agent thinking events — store in ref until agent_message_start arrives
+      if (event.type === "agent_thinking") {
+        const agentId = event.agent as string;
+        const round = event.round as number;
+        const thinkKey = `${agentId}_${round}`;
+        const thinking = event.thinking as string;
+        const agentName = (event.agent_name as string) ?? "";
+
+        // Check if the message already exists (agent_message_start arrived before thinking)
+        let attached = false;
+        setMessages((prev) => {
+          const next = new Map(prev);
+          for (const [id, msg] of next) {
+            if (msg.positionId === agentId && msg.round === round && !msg.complete && !msg.isDataFetch) {
+              next.set(id, { ...msg, thinking, thinkingExpanded: true });
+              attached = true;
+              break;
+            }
+          }
+          return next;
+        });
+        // Otherwise, store for later attachment when agent_message_start arrives
+        if (!attached) {
+          pendingThinking.current.set(thinkKey, { thinking, agentName });
+        }
       }
     }
 
@@ -345,14 +462,57 @@ export function ChatStream({ events }: ChatStreamProps) {
                 <span className="inline-block w-1.5 h-4 bg-current animate-pulse" />
               )}
             </div>
-            {msg.isDataFetch && msg.complete ? (
-              <div className="text-xs text-neutral-400">
-                {msg.resultCount ?? 0} 条数据已添加到数据池
+            {msg.isDataFetch ? (
+              <div className="text-xs text-neutral-400 whitespace-pre-wrap">
+                {msg.complete ? (
+                  `${msg.resultCount ?? 0} 条数据已添加到数据池`
+                ) : (
+                  <>
+                    {msg.content}
+                    {!msg.complete && (
+                      <span className="inline-block w-1.5 h-3 bg-cyan-400 animate-pulse ml-1 align-middle" />
+                    )}
+                  </>
+                )}
               </div>
             ) : (
-              <p className="text-neutral-300 text-sm leading-relaxed whitespace-pre-wrap">
-                <CitationText text={msg.content} poolMap={dataPool} />
-              </p>
+              <>
+                {msg.thinking && (
+                  <div
+                    className={`mb-2 rounded-lg border transition-all duration-300 ${
+                      msg.thinkingExpanded
+                        ? "border-amber-800/60 bg-amber-950/20 p-3"
+                        : "border-neutral-800 bg-neutral-900/50 p-2 cursor-pointer hover:bg-neutral-800/50"
+                    }`}
+                    onClick={() => {
+                      if (!msg.thinkingExpanded) {
+                        setMessages((prev) => {
+                          const next = new Map(prev);
+                          next.set(msg.id, { ...msg, thinkingExpanded: true });
+                          return next;
+                        });
+                      }
+                    }}
+                  >
+                    <div className="flex items-center gap-1.5 mb-1">
+                      <span className="text-amber-400 text-xs font-medium">
+                        {msg.thinkingExpanded ? "思考过程" : "思考过程 ▸"}
+                      </span>
+                      {!msg.complete && (
+                        <span className="inline-block w-1 h-1 bg-amber-400 rounded-full animate-pulse" />
+                      )}
+                    </div>
+                    {msg.thinkingExpanded && (
+                      <p className="text-xs text-neutral-400 leading-relaxed whitespace-pre-wrap">
+                        {msg.thinking}
+                      </p>
+                    )}
+                  </div>
+                )}
+                <p className="text-neutral-300 text-sm leading-relaxed whitespace-pre-wrap">
+                  <CitationText text={msg.content} poolMap={dataPool} />
+                </p>
+              </>
             )}
           </div>
         );

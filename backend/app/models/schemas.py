@@ -8,7 +8,6 @@ from typing import Literal
 
 from pydantic import BaseModel, Field
 
-
 # --- Moderator ---
 
 
@@ -94,6 +93,45 @@ class ScoreResult(BaseModel):
     scores: list[ScoreEntry] = Field(default_factory=list)
 
 
+# --- Agent Thinking (ReAct-style: free-form + semantic data need) ---
+
+
+class AgentThinking(BaseModel):
+    """Free-form thinking output from any agent, with optional data need.
+
+    Replaces the rigid role-specific ThinkResult schemas.
+    Agents think freely about whatever they consider important.
+    Strategy fields are metadata extracted FROM free-form thinking for
+    cross-round state accumulation, not constraints ON the thinking process.
+    """
+
+    thinking: str = Field(
+        default="",
+        description="自由思考过程：分析局势、制定策略、发现关键问题等",
+    )
+    data_need: str = Field(
+        default="",
+        description="你需要什么数据？用自然语言描述，如'詹姆斯在5月7日比赛的具体得分和篮板数据'。留空表示不需要数据。",
+    )
+    # Strategy state metadata (only populated by debater think_before_speaking)
+    my_arguments_standing: list[str] = Field(
+        default_factory=list,
+        description="你方仍然站得住的论点（一句话总结）",
+    )
+    my_arguments_refuted: list[str] = Field(
+        default_factory=list,
+        description="被对手成功反驳的论点（一句话总结）",
+    )
+    opponent_weaknesses: list[str] = Field(
+        default_factory=list,
+        description="发现的对手弱点或漏洞",
+    )
+    chosen_strategy: str = Field(
+        default="",
+        description="本轮策略：ATTACK/DEFEND/REDIRECT/EVIDENCE",
+    )
+
+
 # --- Data Clerk ---
 
 
@@ -101,6 +139,21 @@ class SearchQueries(BaseModel):
     """Search queries decided by data clerk for a debater."""
 
     searches: list[str] = Field(default_factory=list)
+
+
+class ResearchStep(BaseModel):
+    """One step in the chain-of-thought research process."""
+
+    reasoning: str = Field(description="推理过程：从已知信息推导出下一步要搜什么")
+    search_queries: list[str] = Field(
+        default_factory=list, description="本步骤的搜索关键词，最多2个",
+    )
+
+
+class ResearchPlan(BaseModel):
+    """Multi-step research plan for a topic."""
+
+    steps: list[ResearchStep] = Field(default_factory=list)
 
 
 class DataScope(BaseModel):
@@ -119,3 +172,88 @@ class VerifiedResults(BaseModel):
     verified: list[dict] = Field(default_factory=list)
     rejected: list[str] = Field(default_factory=list)
     verification_note: str = ""
+
+
+class ExtractedFacts(BaseModel):
+    """Key facts extracted from a web page relevant to a query."""
+
+    key_facts: list[str] = Field(
+        default_factory=list,
+        description="与搜索关键词相关的关键事实列表，每条不超过100字",
+    )
+    summary: str = Field(
+        default="",
+        description="页面内容摘要（仅与查询相关的部分）",
+    )
+
+
+class CrossValidatedFacts(BaseModel):
+    """Cross-validated facts across multiple sources."""
+
+    validated: list[dict] = Field(
+        default_factory=list,
+        description="多源佐证的事实，每条含 fact 和 source_count",
+    )
+    unique: list[dict] = Field(
+        default_factory=list,
+        description="单源事实",
+    )
+    contradictions: list[dict] = Field(
+        default_factory=list,
+        description="矛盾的事实，含 conflicting_facts 和 sources",
+    )
+    note: str = Field(default="", description="验证说明")
+
+
+class ScreenedResults(BaseModel):
+    """Results screened for relevance and consistency before deep extraction."""
+
+    kept: list[dict] = Field(
+        default_factory=list,
+        description="通过筛查的结果（title, snippet, url）",
+    )
+    rejected: list[str] = Field(
+        default_factory=list,
+        description="排除原因列表",
+    )
+    screening_note: str = Field(default="", description="筛查说明")
+
+
+class RefinementQueries(BaseModel):
+    """Queries generated to resolve contradictions found in cross-validation."""
+
+    queries: list[str] = Field(
+        default_factory=list,
+        description="补充搜索关键词（最多2个，由 MAX_QUERIES 约束）",
+    )
+    reasoning: str = Field(default="", description="为什么搜这些关键词")
+    focus: str = Field(default="", description="矛盾焦点是什么")
+
+
+# --- Semantic Intent Protocol ---
+
+
+class PoolSufficiency(BaseModel):
+    """Check whether existing data pool already answers the agent's data need."""
+
+    sufficient: bool = False
+    missing_aspects: list[str] = Field(default_factory=list)
+    reasoning: str = ""
+
+
+class NeedDecomposition(BaseModel):
+    """Convert semantic data need into targeted search queries."""
+
+    queries: list[str] = Field(
+        default_factory=list, description="1-2 targeted search queries",
+    )
+    reasoning: str = ""
+
+
+class DataSufficiency(BaseModel):
+    """Check whether fetched data sufficiently answers the agent's data need."""
+
+    sufficient: bool = False
+    gaps: list[str] = Field(default_factory=list)
+    relevant_facts: list[str] = Field(default_factory=list)
+    reasoning: str = ""

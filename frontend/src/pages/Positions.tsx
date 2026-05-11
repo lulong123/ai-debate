@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { suggestPositions, startDiscussion } from "../lib/api";
 
@@ -6,6 +6,22 @@ interface Position {
   id: string;
   name: string;
   description: string;
+}
+
+interface ThinkingStep {
+  step: string;
+  message: string;
+}
+
+interface SearchResult {
+  title: string;
+  snippet: string;
+  url: string;
+}
+
+interface SearchStep {
+  queries: string[];
+  results: SearchResult[];
 }
 
 export function Positions() {
@@ -18,7 +34,13 @@ export function Positions() {
   const [error, setError] = useState("");
   const [dataClerkReason, setDataClerkReason] = useState("");
   const [enableDataClerk, setEnableDataClerk] = useState(false);
-  const [preliminaryData, setPreliminaryData] = useState<Array<{ title: string; snippet: string; url: string }> | null>(null);
+  const [preliminaryData, setPreliminaryData] = useState<
+    Array<{ title: string; snippet: string; url: string }> | null
+  >(null);
+  const [thinkingSteps, setThinkingSteps] = useState<ThinkingStep[]>([]);
+  const [thinkingContent, setThinkingContent] = useState("");
+  const [searchSteps, setSearchSteps] = useState<SearchStep[]>([]);
+  const esRef = useRef<EventSource | null>(null);
 
   useEffect(() => {
     if (!sessionId) {
@@ -26,17 +48,105 @@ export function Positions() {
       setLoading(false);
       return;
     }
-    suggestPositions(sessionId)
-      .then((data) => {
-        setPositions(data.positions || []);
-        setDataClerkReason(data.data_clerk_reason ?? "");
-        setEnableDataClerk(data.data_clerk_recommended ?? false);
-        setPreliminaryData(data.preliminary_data ?? null);
-      })
-      .catch(() => {
+
+    const abortController = new AbortController();
+
+    // Connect SSE to receive progress events
+    const es = new EventSource(`/api/sessions/${sessionId}/stream`);
+    esRef.current = es;
+
+    // Track pending search queries waiting for their results
+    let pendingQueries: string[] = [];
+
+    const handleEvent = (e: MessageEvent) => {
+      if (abortController.signal.aborted) return;
+      if (!e.data) return;
+      try {
+        const event = JSON.parse(e.data as string);
+        if (event.type === "analysis_progress") {
+          setThinkingSteps((prev) => [
+            ...prev,
+            { step: event.step, message: event.message },
+          ]);
+        } else if (event.type === "agent_thinking") {
+          setThinkingContent(event.thinking || "");
+        } else if (event.type === "search_queries") {
+          pendingQueries = event.queries || [];
+          setThinkingSteps((prev) => [
+            ...prev,
+            { step: "search_queries", message: `搜索关键词：${(event.queries || []).join("、")}` },
+          ]);
+        } else if (event.type === "search_results") {
+          const results: SearchResult[] = event.results || [];
+          setSearchSteps((prev) => [
+            ...prev,
+            { queries: pendingQueries, results },
+          ]);
+          pendingQueries = [];
+        }
+      } catch {
+        // Ignore non-JSON messages
+      }
+    };
+
+    es.addEventListener("analysis_progress", handleEvent);
+    es.addEventListener("agent_thinking", handleEvent);
+    es.addEventListener("search_queries", handleEvent);
+    es.addEventListener("search_results", handleEvent);
+
+    // Result event from SSE
+    const handleResult = (e: MessageEvent) => {
+      if (abortController.signal.aborted || !e.data) return;
+      try {
+        const event = JSON.parse(e.data as string);
+        if (event.type === "positions_result") {
+          setPositions(event.positions || []);
+          setDataClerkReason(event.data_clerk_reason ?? "");
+          setEnableDataClerk(event.data_clerk_recommended ?? false);
+          setPreliminaryData(event.preliminary_data ?? null);
+          es.close();
+          esRef.current = null;
+          setLoading(false);
+        } else if (event.type === "error" && event.source === "suggest") {
+          setError("获取立场建议失败，请重试");
+          es.close();
+          esRef.current = null;
+          setLoading(false);
+        }
+      } catch {
+        // Ignore non-JSON messages
+      }
+    };
+
+    es.addEventListener("positions_result", handleResult);
+    es.addEventListener("error", handleResult);
+
+    // Wait for SSE connection, then fire-and-forget suggestPositions
+    const doSuggest = async () => {
+      await new Promise<void>((resolve) => {
+        es.onopen = () => resolve();
+        setTimeout(() => resolve(), 2000); // fallback timeout
+      });
+
+      if (abortController.signal.aborted) return;
+
+      // Fire-and-forget: result comes via SSE
+      suggestPositions(sessionId).catch(() => {
+        if (abortController.signal.aborted) return;
         setError("获取立场建议失败，请检查网络连接");
-      })
-      .finally(() => setLoading(false));
+        es.close();
+        esRef.current = null;
+        setLoading(false);
+      });
+    };
+
+    doSuggest();
+
+    return () => {
+      abortController.abort();
+      es.close();
+      esRef.current = null;
+    };
   }, [sessionId]);
 
   const togglePosition = useCallback((id: string) => {
@@ -64,9 +174,88 @@ export function Positions() {
 
   if (loading) {
     return (
-      <div className="flex items-center justify-center py-20">
-        <div className="animate-spin w-8 h-8 border-2 border-blue-500 border-t-transparent rounded-full" />
-        <span className="ml-3 text-neutral-400">主持人正在分析问题，识别可能立场...</span>
+      <div className="max-w-2xl mx-auto px-4 sm:px-0">
+        <div className="text-center mb-8">
+          <h2 className="text-2xl font-bold mb-2">选择辩论立场</h2>
+          <p className="text-neutral-400">主持人正在分析问题，识别可能立场</p>
+        </div>
+        <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6">
+          {thinkingSteps.length > 0 || thinkingContent || searchSteps.length > 0 ? (
+            <div className="space-y-2">
+              {thinkingSteps.map((step, i) => (
+                <div
+                  key={`step-${i}`}
+                  className="flex items-center gap-2 text-sm text-neutral-400"
+                >
+                  <div
+                    className={`w-1.5 h-1.5 rounded-full ${
+                      i === thinkingSteps.length - 1
+                        ? "bg-blue-500 animate-pulse"
+                        : "bg-neutral-600"
+                    }`}
+                  />
+                  <span>{step.message}</span>
+                </div>
+              ))}
+              {thinkingContent && (
+                <details
+                  open
+                  className="mt-3 p-3 rounded-lg border border-amber-700/40 bg-amber-950/20"
+                >
+                  <summary className="text-sm font-medium text-amber-400 cursor-pointer">
+                    主持人思考中...
+                  </summary>
+                  <p className="mt-2 text-xs text-amber-200/70 whitespace-pre-wrap leading-relaxed">
+                    {thinkingContent}
+                  </p>
+                </details>
+              )}
+              {searchSteps.length > 0 && (
+                <details
+                  open
+                  className="mt-3 p-3 rounded-lg border border-cyan-800/40 bg-cyan-950/20"
+                >
+                  <summary className="text-sm font-medium text-cyan-400 cursor-pointer">
+                    搜索结果（{searchSteps.reduce((acc, s) => acc + s.results.length, 0)} 条）
+                  </summary>
+                  <div className="mt-2 space-y-2">
+                    {searchSteps.map((step, si) => (
+                      <div key={`search-${si}`}>
+                        <div className="text-xs text-cyan-500/70 mb-1">
+                          关键词：{step.queries.join("、")}
+                        </div>
+                        {step.results.map((r, ri) => (
+                          <div key={ri} className="text-xs ml-2 mb-1">
+                            <span className="text-cyan-400/70 font-medium">{r.title}</span>
+                            <span className="mx-1 text-neutral-600">-</span>
+                            <span className="text-neutral-400">
+                              {r.snippet.slice(0, 120)}{r.snippet.length > 120 ? "..." : ""}
+                            </span>
+                            {r.url && (
+                              <a
+                                href={r.url}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="ml-1 text-cyan-500/50 hover:text-cyan-400"
+                              >
+                                [链接]
+                              </a>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    ))}
+                  </div>
+                </details>
+              )}
+            </div>
+          ) : (
+            <div className="flex items-center justify-center py-10">
+              <div className="animate-spin w-6 h-6 border-2 border-blue-500 border-t-transparent rounded-full" />
+              <span className="ml-3 text-neutral-400">正在连接...</span>
+            </div>
+          )}
+        </div>
       </div>
     );
   }
@@ -161,7 +350,10 @@ export function Positions() {
               <div key={i} className="text-xs">
                 <span className="text-cyan-400/70 font-medium">{r.title}</span>
                 <span className="mx-1 text-neutral-600">-</span>
-                <span className="text-neutral-400">{r.snippet.slice(0, 150)}{r.snippet.length > 150 ? "..." : ""}</span>
+                <span className="text-neutral-400">
+                  {r.snippet.slice(0, 150)}
+                  {r.snippet.length > 150 ? "..." : ""}
+                </span>
                 {r.url && (
                   <a
                     href={r.url}
@@ -183,7 +375,11 @@ export function Positions() {
         disabled={starting || selected.size < 2}
         className="mt-6 w-full bg-blue-600 hover:bg-blue-700 disabled:bg-neutral-700 disabled:text-neutral-500 text-white font-medium py-3 rounded-lg transition-colors"
       >
-        {starting ? "正在启动..." : selected.size < 2 ? `还需选择 ${2 - selected.size} 个立场` : "开始辩论"}
+        {starting
+          ? "正在启动..."
+          : selected.size < 2
+            ? `还需选择 ${2 - selected.size} 个立场`
+            : "开始辩论"}
       </button>
     </div>
   );

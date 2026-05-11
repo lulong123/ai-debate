@@ -1,7 +1,7 @@
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models.session import Message, DiscussionSession, Position, SessionStatus, DataPoolItem
+from app.models.session import DataPoolItem, DiscussionSession, Message, Position
 
 
 class SessionRepository:
@@ -38,8 +38,14 @@ class SessionRepository:
         )
         return list(result.scalars().all())
 
-    async def add_position(self, session_id: str, name: str, description: str, is_custom: bool = False, position_id: str | None = None) -> Position:
-        position = Position(id=position_id, session_id=session_id, name=name, description=description, is_custom=is_custom)
+    async def add_position(
+        self, session_id: str, name: str, description: str,
+        is_custom: bool = False, position_id: str | None = None,
+    ) -> Position:
+        position = Position(
+            id=position_id, session_id=session_id,
+            name=name, description=description, is_custom=is_custom,
+        )
         self.db.add(position)
         await self.db.commit()
         return position
@@ -61,10 +67,12 @@ class SessionRepository:
     async def add_data_pool_item(
         self, session_id: str, source: str, title: str,
         snippet: str = "", url: str = "", round_number: int | None = None,
+        key_facts: str | None = None,
     ) -> DataPoolItem:
         item = DataPoolItem(
             session_id=session_id, source=source, title=title,
             snippet=snippet, url=url, round_number=round_number,
+            key_facts=key_facts,
         )
         self.db.add(item)
         await self.db.commit()

@@ -98,8 +98,10 @@ export async function listSessions(): Promise<SessionListItem[]> {
   return request<SessionListItem[]>(`${API_BASE}/sessions`);
 }
 
-export async function clarifyTopic(sessionId: string): Promise<ClarifyResponse> {
-  return request<ClarifyResponse>(`${API_BASE}/sessions/${sessionId}/clarify`, { method: "POST" });
+export async function clarifyTopic(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/clarify`, { method: "POST" });
+  if (!res.ok) throw new Error(res.statusText);
+  // 202 — result comes via SSE
 }
 
 export async function refineTopic(sessionId: string, answer: string): Promise<{ session_id: string; refined_topic: string }> {
@@ -110,8 +112,10 @@ export async function refineTopic(sessionId: string, answer: string): Promise<{ 
   });
 }
 
-export async function suggestPositions(sessionId: string): Promise<SuggestPositionsResponse> {
-  return request<SuggestPositionsResponse>(`${API_BASE}/sessions/${sessionId}/suggest-positions`, { method: "POST" });
+export async function suggestPositions(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}/suggest-positions`, { method: "POST" });
+  if (!res.ok) throw new Error(res.statusText);
+  // 202 — result comes via SSE
 }
 
 export async function startDiscussion(

@@ -58,9 +58,13 @@ export function useSSE(sessionId: string | null) {
     const eventTypes = [
       "discussion_start", "round_start", "agent_message_start",
       "agent_message_chunk", "agent_message_complete",
+      "agent_thinking",
       "score_update", "moderator_guidance", "round_complete",
       "discussion_end", "error", "data_fetch_start", "data_fetch_complete",
       "user_data_added",
+      "clarify_result", "positions_result",
+      "search_queries", "search_results",
+      "analysis_progress", "content_extraction_complete", "cross_validation_result",
     ];
     for (const type of eventTypes) {
       es.addEventListener(type, handleEvent);

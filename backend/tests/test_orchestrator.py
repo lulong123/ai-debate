@@ -3,16 +3,17 @@
 from unittest.mock import patch
 
 import pytest
-from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
-from app.models.session import SessionStatus
 from app.models.schemas import (
+    AgentThinking,
     DebateMinutes,
     RoundJudgment,
-    ScoreResult,
     ScoreEntry,
+    ScoreResult,
     Verdict,
 )
+from app.models.session import SessionStatus
 from app.services.orchestrator import Orchestrator
 from app.storage.database import Base
 from app.storage.repository import SessionRepository
@@ -65,8 +66,14 @@ async def test_orchestrator_full_flow(db: AsyncSession):
         if response_model is ScoreResult:
             if n <= 1:
                 return ScoreResult(scores=[
-                    ScoreEntry(position_id=pos1.id, position_name="支持", points=60, comment="论据充分"),
-                    ScoreEntry(position_id=pos2.id, position_name="反对", points=40, comment="反驳较弱"),
+                    ScoreEntry(
+                        position_id=pos1.id, position_name="支持",
+                        points=60, comment="论据充分",
+                    ),
+                    ScoreEntry(
+                        position_id=pos2.id, position_name="反对",
+                        points=40, comment="反驳较弱",
+                    ),
                 ])
             return ScoreResult(scores=[
                 ScoreEntry(position_id=pos1.id, position_name="支持", points=55, comment=""),
@@ -84,6 +91,11 @@ async def test_orchestrator_full_flow(db: AsyncSession):
                 key_clashes=["监管与创新平衡"],
                 verdict=Verdict(winner="支持", rationale="论据更充分", score_summary="60:40"),
                 summary="支持方以充分论据获胜。",
+            )
+        if response_model is AgentThinking:
+            return AgentThinking(
+                thinking="分析辩论局势...",
+                chosen_strategy="ATTACK",
             )
         # Fallback for any other model
         return response_model()

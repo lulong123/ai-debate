@@ -24,6 +24,9 @@ class Settings(BaseSettings):
     zhipu_search_api_key: str = ""
     tavily_api_key: str = ""
 
+    # Chain-of-Thought (two-pass thinking)
+    enable_cot: bool = True  # Can be disabled via ENABLE_COT=false
+
     # Data Clerk (optional)
     data_clerk_model: str = ""  # Uses default LLM model if empty
 

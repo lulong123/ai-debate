@@ -9,8 +9,9 @@ from app.agents.data_clerk import DataClerkAgent
 from app.agents.moderator import ModeratorAgent
 from app.agents.perspective import PerspectiveAgent
 from app.agents.scorer import ScorerAgent
+from app.config import settings
 from app.models import MessageRole, SessionStatus
-from app.models.schemas import RoundJudgment
+from app.models.schemas import AgentThinking, RoundJudgment
 from app.routers.sse import publish
 from app.services.search import get_search_provider
 from app.storage.repository import SessionRepository
@@ -18,6 +19,13 @@ from app.storage.repository import SessionRepository
 logger = logging.getLogger(__name__)
 
 MAX_POOL_DISPLAY = 20  # Max results to inject into agent prompts
+
+STRATEGY_GUIDANCE = {
+    "ATTACK": "你的策略是进攻。找出对手论点的具体漏洞，集中攻击。",
+    "DEFEND": "你的策略是防守。强化你被挑战的论点，提供更多支撑。",
+    "REDIRECT": "你的策略是转向。换一个全新的角度来论证你的立场。",
+    "EVIDENCE": "你的策略是引证。引入新的数据或事实来支撑你的论点。",
+}
 
 
 class Orchestrator:
@@ -90,7 +98,26 @@ class Orchestrator:
             # 0.5 Establish data scope (if data clerk is enabled)
             data_scope_text = ""
             if data_clerk is not None:
-                scope = await self.moderator.establish_data_scope(session.topic, positions_data)
+                # Search topic facts first so scope is based on real data, not training data
+                scope_data_context = ""
+                try:
+                    scope_results = await data_clerk.research_topic(session.topic, self.search)
+                    if scope_results:
+                        lines = [
+                            f"- {r.get('title', '')}：{r.get('snippet', '')}"
+                            for r in scope_results
+                        ]
+                        scope_data_context = "\n".join(lines)
+                        logger.info(
+                            "Scope search got %d results for session %s",
+                            len(scope_results), session_id,
+                        )
+                except Exception as e:
+                    logger.warning("Scope search failed for session %s: %s", session_id, e)
+
+                scope = await self.moderator.establish_data_scope(
+                    session.topic, positions_data, data_context=scope_data_context
+                )
                 data_scope_text = (
                     f"事件：{scope.specific_event}\n"
                     f"时间范围：{scope.time_range}\n"
@@ -162,7 +189,10 @@ class Orchestrator:
                 # Each agent speaks sequentially
                 for agent in agents:
                     # Build context from ALL previous messages (not just this round)
-                    context = self._build_context(session.topic, all_debate_messages, round_messages, round_num)
+                    context = self._build_context(
+                        session.topic, all_debate_messages,
+                        round_messages, round_num,
+                    )
                     user_msg = (
                         f"第 {round_num} 轮辩论。\n"
                         f"你是「{agent.position_name}」方的辩手。\n"
@@ -170,64 +200,110 @@ class Orchestrator:
                         f"注意：不要重复上下文中已经出现过的论点。"
                     )
 
-                    # Data clerk search phase (conservative: data clerk decides if search is needed)
-                    if data_clerk is not None:
-                        data_msg_id = f"data_{agent.position_id}_{round_num}"
-                        truncated_context = context[:1500]
+                    # Two-pass thinking: debater analyzes before speaking
+                    thinking_text = ""
+                    agent_data_need = ""
+                    strategy = ""
+                    if settings.enable_cot:
+                        try:
+                            think_result = await agent.think_before_speaking(
+                                context, round_num,
+                            )
+                            thinking_text = think_result.thinking
+                            agent_data_need = think_result.data_need
 
-                        # Build summary of existing pool so data clerk avoids re-searching
-                        pool_summary = self._format_data_pool_summary(public_data_pool) if public_data_pool else ""
+                            # Fallback: extract semantic need from thinking text
+                            # when data_need is empty but thinking mentions data
+                            if (
+                                data_clerk is not None
+                                and not agent_data_need
+                                and thinking_text
+                                and self._thinking_mentions_data(thinking_text)
+                            ):
+                                agent_data_need = await self._extract_semantic_need(
+                                    session.topic, thinking_text,
+                                )
+                                if agent_data_need:
+                                    logger.info(
+                                        "Extracted semantic need from thinking "
+                                        "for %s round %d: %s",
+                                        agent.position_name, round_num,
+                                        agent_data_need[:80],
+                                    )
 
-                        await self._emit(session_id, {
-                            "type": "data_fetch_start",
-                            "message_id": data_msg_id,
-                            "agent": agent.position_id,
-                            "agent_name": agent.position_name,
-                            "round": round_num,
-                        })
+                            await self._emit(session_id, {
+                                "type": "agent_thinking",
+                                "agent": agent.position_id,
+                                "agent_name": agent.position_name,
+                                "thinking": thinking_text,
+                                "round": round_num,
+                            })
 
-                        raw_results = await data_clerk.fetch_for_agent(
-                            session.topic, truncated_context,
-                            agent.position_name, round_num, self.search,
-                            existing_pool_summary=pool_summary,
-                            data_scope=data_scope_text,
+                            # Update debater state from thinking result
+                            agent.state.update(think_result)
+
+                            # Extract and validate strategy
+                            raw_strategy = (
+                                think_result.chosen_strategy.upper().strip()
+                            )
+                            if raw_strategy and raw_strategy not in STRATEGY_GUIDANCE:
+                                logger.warning(
+                                    "Unknown strategy '%s' from %s, ignoring",
+                                    raw_strategy, agent.position_name,
+                                )
+                                raw_strategy = ""
+                            strategy = raw_strategy
+                        except Exception as e:
+                            logger.warning(
+                                "Debater thinking failed for %s: %s",
+                                agent.position_name, e,
+                            )
+
+                    # ReAct: thinking-driven data fetch
+                    # Agent expresses data need via semantic natural language
+                    fetched_results: list[dict] = []
+                    if data_clerk is not None and agent_data_need:
+                        fetched_results = await self._fetch_and_persist_data(
+                            session_id=session_id,
+                            agent_id=agent.position_id,
+                            agent_name=agent.position_name,
+                            round_num=round_num,
+                            topic=session.topic,
+                            agent_context=context[:1500],
+                            data_need=agent_data_need,
+                            data_clerk=data_clerk,
+                            public_data_pool=public_data_pool,
+                            data_scope_text=data_scope_text,
                         )
 
-                        # Verify results against data scope and existing pool
-                        if raw_results and data_scope_text:
-                            results = await data_clerk.verify_results(
-                                raw_results, session.topic, data_scope_text,
-                                existing_pool_summary=pool_summary,
-                            )
-                        else:
-                            results = raw_results
-
-                        # Persist verified results to DB
-                        for r in results:
+                        # Re-think: second thinking pass with new data
+                        if fetched_results and settings.enable_cot:
                             try:
-                                await self.repo.add_data_pool_item(
-                                    session_id=session_id,
-                                    source="data_clerk",
-                                    title=r.get("title", ""),
-                                    snippet=r.get("snippet", ""),
-                                    url=r.get("url", ""),
-                                    round_number=round_num,
+                                fetched_summary = self._format_data_pool(fetched_results)
+                                re_think = await agent.re_think_with_data(
+                                    context, round_num,
+                                    fetched_summary, thinking_text,
                                 )
-                            except Exception:
-                                pass  # Non-blocking persistence
+                                thinking_text = (
+                                    f"{thinking_text}\n\n"
+                                    f"【数据获取后的重新分析】\n{re_think.thinking}"
+                                )
+                                await self._emit(session_id, {
+                                    "type": "agent_thinking",
+                                    "phase": "rethink",
+                                    "agent": agent.position_id,
+                                    "agent_name": agent.position_name,
+                                    "thinking": re_think.thinking,
+                                    "round": round_num,
+                                })
+                            except Exception as e:
+                                logger.warning(
+                                    "Debater re-think failed for %s: %s",
+                                    agent.position_name, e,
+                                )
 
-                        public_data_pool.extend(results)
-
-                        await self._emit(session_id, {
-                            "type": "data_fetch_complete",
-                            "message_id": data_msg_id,
-                            "agent": agent.position_id,
-                            "agent_name": agent.position_name,
-                            "results": results,
-                            "round": round_num,
-                        })
-
-                        # Inject data scope + data pool into the agent's prompt
+                    # Inject data scope + data pool into the agent's prompt
+                    if data_clerk is not None:
                         pool_text = self._format_data_pool(public_data_pool)
                         scope_injection = ""
                         if data_scope_text:
@@ -245,6 +321,20 @@ class Orchestrator:
                         )
 
                     # Stream agent response
+                    # Inject thinking context if available
+                    if thinking_text:
+                        user_msg = (
+                            f"【你的思考分析】\n{thinking_text}\n\n"
+                            f"基于以上分析，现在发言：\n{user_msg}"
+                        )
+                    # Inject strategy guidance if available
+                    if strategy and strategy in STRATEGY_GUIDANCE:
+                        guidance = STRATEGY_GUIDANCE[strategy]
+                        user_msg = (
+                            f"【策略指导】{guidance}"
+                            "（如果策略与发言规则冲突，策略优先）\n\n"
+                            f"{user_msg}"
+                        )
                     full_response = []
                     msg_id = f"msg_{session_id}_{self._seq + 1}"
                     await self._emit(session_id, {
@@ -297,10 +387,29 @@ class Orchestrator:
                 # 3. Score this round
                 all_debate_messages.extend(round_messages)
 
-                # Build scorer prompt, optionally with data pool
+                # Two-pass thinking: scorer analyzes before scoring
+                scorer_thinking_text = ""
+                if settings.enable_cot:
+                    try:
+                        scorer_think = await self.scorer.think_before_scoring(
+                            session.topic, round_messages, positions_data,
+                        )
+                        scorer_thinking_text = scorer_think.thinking
+                        await self._emit(session_id, {
+                            "type": "agent_thinking",
+                            "agent": "scorer",
+                            "agent_name": "评委",
+                            "thinking": scorer_thinking_text,
+                            "round": round_num,
+                        })
+                    except Exception as e:
+                        logger.warning("Scorer thinking failed: %s", e)
+
+                # Build scorer prompt, optionally with data pool and thinking
                 score_result = await self._score_with_data(
                     session.topic, round_messages, positions_data,
-                    public_data_pool if data_clerk else None
+                    public_data_pool if data_clerk else None,
+                    scorer_thinking_text,
                 )
                 scores = score_result.get("scores", [])
                 all_scores.extend(scores)
@@ -317,10 +426,92 @@ class Orchestrator:
                     for m in round_messages
                 )
 
+                # Two-pass thinking: moderator analyzes before judging
+                judge_thinking_text = ""
+                moderator_data_need = ""
+                if settings.enable_cot:
+                    try:
+                        judge_think = await self.moderator.think_before_judging(
+                            session.topic, round_num, session.max_rounds,
+                            summary, positions_data,
+                        )
+                        judge_thinking_text = judge_think.thinking
+                        moderator_data_need = judge_think.data_need
+
+                        # Fallback: extract semantic need from thinking text
+                        # when data_need is empty but thinking mentions data
+                        if (
+                            data_clerk is not None
+                            and not moderator_data_need
+                            and judge_thinking_text
+                            and self._thinking_mentions_data(judge_thinking_text)
+                        ):
+                            moderator_data_need = await self._extract_semantic_need(
+                                session.topic, judge_thinking_text,
+                            )
+                            if moderator_data_need:
+                                logger.info(
+                                    "Extracted semantic need from moderator "
+                                    "thinking round %d: %s",
+                                    round_num, moderator_data_need[:80],
+                                )
+
+                        await self._emit(session_id, {
+                            "type": "agent_thinking",
+                            "agent": "moderator",
+                            "agent_name": "主持人",
+                            "thinking": judge_thinking_text,
+                            "round": round_num,
+                        })
+                    except Exception as e:
+                        logger.warning("Moderator judge thinking failed: %s", e)
+
+                # Moderator data fetch + re-think
+                if (
+                    data_clerk is not None
+                    and moderator_data_need
+                    and settings.enable_cot
+                ):
+                    mod_results = await self._fetch_and_persist_data(
+                        session_id=session_id,
+                        agent_id="moderator",
+                        agent_name="主持人",
+                        round_num=round_num,
+                        topic=session.topic,
+                        agent_context=summary[:1500],
+                        data_need=moderator_data_need,
+                        data_clerk=data_clerk,
+                        public_data_pool=public_data_pool,
+                        data_scope_text=data_scope_text,
+                    )
+                    if mod_results:
+                        try:
+                            fetched_summary = self._format_data_pool(mod_results)
+                            re_think = await self.moderator.re_think_with_data(
+                                session.topic, round_num, session.max_rounds,
+                                summary, positions_data,
+                                fetched_summary, judge_thinking_text,
+                            )
+                            judge_thinking_text = (
+                                f"{judge_thinking_text}\n\n"
+                                f"【数据获取后的重新分析】\n{re_think.thinking}"
+                            )
+                            await self._emit(session_id, {
+                                "type": "agent_thinking",
+                                "phase": "rethink",
+                                "agent": "moderator",
+                                "agent_name": "主持人",
+                                "thinking": re_think.thinking,
+                                "round": round_num,
+                            })
+                        except Exception as e:
+                            logger.warning("Moderator re-think failed: %s", e)
+
                 judgment = await self._judge_with_data(
                     session.topic, round_num, session.max_rounds,
                     summary, positions_data,
-                    public_data_pool if data_clerk else None
+                    public_data_pool if data_clerk else None,
+                    judge_thinking_text,
                 )
 
                 # Emit guidance
@@ -351,9 +542,36 @@ class Orchestrator:
 
             # 5. Generate debate verdict
             all_messages = await self.repo.get_messages(session_id)
+
+            # Two-pass thinking: moderator analyzes before generating minutes
+            minutes_thinking_text = ""
+            if settings.enable_cot:
+                try:
+                    minutes_think = await self.moderator.think_before_minutes(
+                        session.topic, positions_data,
+                        [
+                            {"agent_name": m.agent_name, "role": m.role, "content": m.content}
+                            for m in all_messages
+                        ],
+                    )
+                    minutes_thinking_text = minutes_think.thinking
+                    await self._emit(session_id, {
+                        "type": "agent_thinking",
+                        "agent": "moderator",
+                        "agent_name": "主持人",
+                        "thinking": minutes_thinking_text,
+                        "round": 0,
+                    })
+                except Exception as e:
+                    logger.warning("Moderator minutes thinking failed: %s", e)
+
             minutes = await self.moderator.generate_minutes(
                 session.topic, positions_data,
-                [{"agent_name": m.agent_name, "role": m.role, "content": m.content} for m in all_messages]
+                [
+                    {"agent_name": m.agent_name, "role": m.role, "content": m.content}
+                    for m in all_messages
+                ],
+                thinking_text=minutes_thinking_text,
             )
             minutes["all_scores"] = all_scores
 
@@ -385,7 +603,10 @@ class Orchestrator:
                 "message": user_message,
             })
 
-    def _build_context(self, topic: str, all_messages: list[dict], round_messages: list[dict], current_round: int) -> str:
+    def _build_context(
+        self, topic: str, all_messages: list[dict],
+        round_messages: list[dict], current_round: int,
+    ) -> str:
         """Build debate context for an agent, including full history."""
         lines = [f"辩论议题：{topic}"]
 
@@ -422,31 +643,204 @@ class Orchestrator:
             lines.append(f"[{i}] {r.get('title', '')} - {r.get('snippet', '')[:80]}")
         return "\n".join(lines)
 
+    async def _fetch_and_persist_data(
+        self,
+        session_id: str,
+        agent_id: str,
+        agent_name: str,
+        round_num: int,
+        topic: str,
+        agent_context: str,
+        data_need: str,
+        data_clerk: DataClerkAgent,
+        public_data_pool: list[dict],
+        data_scope_text: str = "",
+    ) -> list[dict]:
+        """Fetch data via data clerk's semantic intent protocol, persist to DB, emit SSE events."""
+        data_msg_id = f"data_{agent_id}_{round_num}"
+        pool_summary = (
+            self._format_data_pool_summary(public_data_pool)
+            if public_data_pool else ""
+        )
+
+        await self._emit(session_id, {
+            "type": "data_fetch_start",
+            "message_id": data_msg_id,
+            "agent": agent_id,
+            "agent_name": agent_name,
+            "round": round_num,
+            "data_need": data_need,
+        })
+
+        on_search = self._make_search_callback(
+            session_id, agent_name, round_num,
+        )
+
+        # Semantic intent protocol: pool check → decompose → search → sufficiency
+        results, validation = await data_clerk.research_for_agent(
+            topic, data_need, self.search,
+            pool_summary=pool_summary,
+            data_scope=data_scope_text,
+            on_search=on_search,
+            on_progress=lambda evt: self._emit(session_id, {
+                **evt,
+                "agent_name": agent_name,
+                "phase": "debate",
+            }),
+        )
+
+        # Emit cross-validation result
+        if validation.validated or validation.unique:
+            await self._emit(session_id, {
+                "type": "cross_validation_result",
+                "validated": validation.validated,
+                "unique": validation.unique,
+                "contradictions": validation.contradictions,
+                "note": validation.note,
+            })
+
+        # Persist verified results to DB (with extracted key_facts)
+        for r in results:
+            try:
+                await self.repo.add_data_pool_item(
+                    session_id=session_id,
+                    source="data_clerk",
+                    title=r.get("title", ""),
+                    snippet=r.get("snippet", ""),
+                    url=r.get("url", ""),
+                    round_number=round_num,
+                    key_facts=r.get("key_facts"),
+                )
+            except Exception:
+                pass
+
+        public_data_pool.extend(results)
+
+        await self._emit(session_id, {
+            "type": "data_fetch_complete",
+            "message_id": data_msg_id,
+            "agent": agent_id,
+            "agent_name": agent_name,
+            "results": results,
+            "round": round_num,
+        })
+
+        return results
+
     async def _score_with_data(
         self, topic: str, round_messages: list[dict],
-        positions_data: list[dict], data_pool: list[dict] | None
+        positions_data: list[dict], data_pool: list[dict] | None,
+        thinking_text: str = "",
     ) -> dict:
-        """Score round, optionally injecting data pool context."""
+        """Score round, optionally injecting data pool and thinking context."""
+        enriched_topic = topic
         if data_pool:
-            # Append data pool to scorer context via topic
             pool_text = self._format_data_pool(data_pool)
-            # Scorer gets the pool as extra context in the topic string
             enriched_topic = f"{topic}\n\n【公开数据池】\n{pool_text}"
-            return await self.scorer.score_round(enriched_topic, round_messages, positions_data)
-        return await self.scorer.score_round(topic, round_messages, positions_data)
+        if thinking_text:
+            enriched_topic = (
+                f"{enriched_topic}\n\n【评委分析】\n{thinking_text}"
+            )
+        return await self.scorer.score_round(enriched_topic, round_messages, positions_data)
 
     async def _judge_with_data(
         self, topic: str, round_num: int, max_rounds: int,
         summary: str, positions_data: list[dict],
-        data_pool: list[dict] | None
+        data_pool: list[dict] | None,
+        thinking_text: str = "",
     ) -> RoundJudgment:
-        """Judge round, optionally injecting data pool context."""
+        """Judge round, optionally injecting data pool and thinking context."""
+        enriched_summary = summary
         if data_pool:
             pool_text = self._format_data_pool(data_pool)
             enriched_summary = f"{summary}\n\n【公开数据池】\n{pool_text}"
-            return await self.moderator.judge_round(
-                topic, round_num, max_rounds, enriched_summary, positions_data
+        if thinking_text:
+            enriched_summary = (
+                f"【主持人分析】\n{thinking_text}\n\n{enriched_summary}"
             )
         return await self.moderator.judge_round(
-            topic, round_num, max_rounds, summary, positions_data
+            topic, round_num, max_rounds, enriched_summary, positions_data
         )
+
+    @staticmethod
+    def _format_thinking(think_result: AgentThinking) -> str:
+        """Format agent thinking for SSE display and prompt injection.
+
+        With the new free-form schema, thinking is already a single text field.
+        """
+        return think_result.thinking
+
+    @staticmethod
+    def _thinking_mentions_data(thinking: str) -> bool:
+        """Check if thinking text mentions needing data."""
+        keywords = [
+            "需要数据", "需要.*数据", "缺少数据", "数据不足",
+            "需要.*统计", "需要.*证据", "需要.*搜索",
+            "没有.*数据", "缺少.*数据", "缺乏.*数据",
+            "需要查", "需要搜", "需要找",
+            "具体.*数据", "详细.*数据", "准确.*数据",
+        ]
+        import re
+        for kw in keywords:
+            if re.search(kw, thinking):
+                return True
+        return False
+
+    async def _extract_semantic_need(
+        self, topic: str, thinking_text: str,
+    ) -> str:
+        """Extract a one-sentence semantic data need from thinking text.
+
+        Fallback when data_need is empty but _thinking_mentions_data() matches.
+        Returns empty string on failure.
+        """
+        from app.services.llm import complete
+
+        try:
+            result = await complete([
+                {
+                    "role": "system",
+                    "content": (
+                        "你是一个数据需求提取器。根据辩手/主持人的思考文本，"
+                        "用一句话总结他们需要什么具体数据。"
+                        "只返回一句话，不要解释。"
+                        "如果思考中没有明确需要数据的内容，返回空字符串。"
+                    ),
+                },
+                {
+                    "role": "user",
+                    "content": (
+                        f"辩论议题：{topic}\n\n"
+                        f"思考内容：\n{thinking_text[:500]}\n\n"
+                        "用一句话总结：具体需要什么数据？"
+                    ),
+                },
+            ])
+            need = result.strip()
+            return need if need else ""
+        except Exception as e:
+            logger.warning("Semantic need extraction failed: %s", e)
+            return ""
+
+    def _make_search_callback(self, session_id: str, agent_name: str, round_num: int):
+        """Create an on_search callback that emits SSE events for queries and results."""
+        async def _on_search(queries: list[str], results: list[dict]):
+            await self._emit(session_id, {
+                "type": "search_queries",
+                "phase": "debate",
+                "agent_name": agent_name,
+                "round": round_num,
+                "queries": queries,
+            })
+            if results:
+                await self._emit(session_id, {
+                    "type": "search_results",
+                    "phase": "debate",
+                    "agent_name": agent_name,
+                    "round": round_num,
+                    "results": [
+                        {"title": r.get("title", ""), "snippet": r.get("snippet", ""), "url": r.get("url", "")}
+                        for r in results
+                    ],
+                })
+        return _on_search
