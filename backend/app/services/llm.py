@@ -49,6 +49,7 @@ async def stream_completion(
             api_key=settings.llm_api_key or None,
             api_base=api_base,
             timeout=120,
+            num_retries=0,
         )
 
         async for chunk in response:
@@ -95,6 +96,7 @@ async def complete(
         api_key=settings.llm_api_key or None,
         api_base=api_base,
         timeout=120,
+        num_retries=0,
     )
 
     return response.choices[0].message.content or ""
@@ -118,6 +120,7 @@ async def complete_json(
         api_key=settings.llm_api_key or None,
         api_base=api_base,
         timeout=120,
+        num_retries=0,
         response_format={"type": "json_object"},
     )
 
@@ -156,6 +159,7 @@ async def complete_typed(
         api_key=settings.llm_api_key or None,
         api_base=api_base,
         timeout=120,
+        num_retries=0,
         response_format={"type": "json_object"},
     )
 
