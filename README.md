@@ -1,136 +1,207 @@
-# AI 圆桌会议
+# AI 圆桌会议 / AI Roundtable
 
-多角度 AI 协作讨论平台。提交一个议题，多个 AI agent 从不同角度协作分析，帮你做出更好的判断。
+多角度 AI 协作讨论平台。提交一个议题，多个 AI agent 从不同角度协作分析，实时搜索验证数据，产出结构化会议纪要。
 
-## 为什么做这个
+AI 只能给你一个角度的回答，容易自圆其说、遗漏盲点。这个工具让多个 AI 角色从不同维度分析同一个问题，协作产出全面的结论。跟辩论工具不同：不是打架，是协作——目标不是"谁赢了"，而是帮你做出更好的判断。
 
-AI 只能给你一个角度的回答，容易自圆其说、遗漏盲点。这个工具让多个 AI 角色从不同维度分析同一个问题，协作产出全面的结论和可落地方案。
+## Features
 
-跟 AI 辩论工具不同：不是打架，是协作。目标不是"谁赢了"，而是帮你做出更好的判断。
+- **多 Agent 协作辩论** — 主持人、辩手（可配置角度）、数据研究员、评委，结构化多轮讨论
+- **实时数据研究** — 数据研究员自动搜索、预筛查、提取、交叉验证网页数据，佐证不足时迭代补充搜索
+- **两阶段思考 (CoT)** — 每个 agent 行动前先做结构化思考，思考过程前端可见（可折叠面板）
+- **多模型路由** — YAML 配置不同 agent 使用不同 LLM（GLM / GPT / Claude / DeepSeek / Gemini / Qwen / 本地模型等）
+- **[N] 引用系统** — 所有观点基于编号引用，点击可查看来源标题、摘要、URL
+- **SSE 流式传输** — Token 级实时流式渲染，断线自动重连
+- **共享数据池** — 用户可在辩论过程中向数据池添加自己的数据
+- **辩手跨轮次记忆** — 辩手记住哪些论点被反驳、对手弱点，不重复失败论点
 
-## 功能
+## Tech Stack
 
-- 提交议题，AI 主持人审议并建议讨论角度
-- 选择 2-6 个角度（技术、法律、伦理、经济...）
-- 实时观看各角度 agent 依次发言（token 级流式）
-- 每轮结束后实时评分
-- 讨论结束自动生成结构化会议纪要
-- 纪要导出为 Markdown
+| Layer | Tech |
+|-------|------|
+| Backend | Python 3.11+, FastAPI, SQLAlchemy (async), SQLite |
+| Frontend | React 19, Vite 6, TailwindCSS v4, TypeScript |
+| LLM | LiteLLM (OpenAI-compatible, 20+ providers) |
+| Real-time | SSE (Server-Sent Events) |
+| Search | Zhipu MCP Search (reuses LLM API key) |
+| Structured Output | `response_format=json_object` + Pydantic validation |
 
-## 快速开始
+## Quick Start
 
-### 环境要求
+### Prerequisites
 
 - Python 3.11+
 - Node.js 22+
-- LLM API Key（智谱 / OpenAI 兼容）
+- An LLM API key (e.g. [Zhipu/GLM](https://open.bigmodel.cn))
 
-### 后端
+### 1. Backend
 
 ```bash
 cd backend
+cp ../.env.example .env
+# Edit .env, fill in LLM_API_KEY
 pip install -e ".[dev]"
-
-# 配置环境变量
-cp ../.env.example ../.env
-# 编辑 .env 填入 LLM_API_KEY
-
-uvicorn app.main:app --reload --port 8000
+python -m uvicorn app.main:app --port 8002
 ```
 
-### 前端
+### 2. Frontend
 
 ```bash
 cd frontend
 npm install
 npm run dev
-# 打开 http://localhost:5173
+# Open http://localhost:5173 (auto-proxies /api → localhost:8002)
 ```
 
-### Docker
+### 3. Docker
 
 ```bash
 cp .env.example .env
-# 编辑 .env 填入 LLM_API_KEY
-
+# Edit .env, fill in LLM_API_KEY
 docker-compose up --build
-# 打开 http://localhost:3000
+# Open http://localhost:3000
 ```
 
-## 讨论流程
+## Configuration
 
-```
-用户提交议题
-    ↓
-主持人审议（可能追问澄清）
-    ↓
-主持人建议 3-5 个讨论角度
-    ↓
-用户选择角度（至少 2 个）
-    ↓
-循环 1-N 轮：
-  各角度 agent 依次发言
-  评分 agent 打分
-  主持人判断是否继续
-    ↓
-主持人生成会议纪要
+### Single Model (default)
+
+Set in `.env`:
+
+```env
+LLM_MODEL=openai/glm-5.1
+LLM_API_KEY=your_key
+LLM_BASE_URL=https://open.bigmodel.cn/api/paas/v4
 ```
 
-## 成本
+### Multi-Model Routing
 
-默认配置（3 个角度，3 轮）：约 31 次 LLM 调用，30k-50k tokens。
-- 智谱 GLM-4：约 ¥0.1-0.3/场
-- GPT-4o-mini：约 $0.02-0.05/场
+```bash
+cp backend/config.example.yaml backend/config.yaml
+```
 
-## 技术栈
+Edit `config.yaml` to assign different models per agent role:
 
-| 层 | 选型 |
-|----|------|
-| 后端 | FastAPI + SQLAlchemy + LiteLLM |
-| 前端 | React + Vite + TailwindCSS |
-| 实时通信 | SSE (Server-Sent Events) |
-| 数据库 | SQLite (MVP) / PostgreSQL (生产) |
-| 部署 | Docker Compose |
+```yaml
+models:
+  - role: default
+    model: openai/glm-5.1
+    api_key: $LLM_API_KEY
+    base_url: https://open.bigmodel.cn/api/paas/v4
 
-## 项目结构
+  - role: debater
+    model: openai/gpt-4o-mini
+    api_key: $OPENAI_API_KEY
+
+  - role: data_clerk
+    model: deepseek/deepseek-chat
+    api_key: $DEEPSEEK_API_KEY
+```
+
+Supported roles: `default`, `moderator`, `debater`, `scorer`, `data_clerk`
+
+See [backend/config.example.yaml](backend/config.example.yaml) for all providers: GLM, OpenAI, Claude, DeepSeek, Gemini, Qwen, Moonshot, Ollama, Volcengine, etc.
+
+## Debate Flow
+
+```
+User submits topic
+    ↓
+Data clerk searches topic context → Moderator clarifies (with search data)
+    ↓
+Moderator suggests debate angles → User selects 2-6 angles
+    ↓
+Moderator establishes data boundaries (event, time, entities, relevance rules)
+    ↓
+Loop 1-N rounds:
+  Data clerk: time-aware search → screen → extract → cross-validate
+              (iterative search if validation insufficient, up to 3 rounds)
+  Debaters:   think (see data pool + boundaries) → speak (cite [1][2]...)
+  Moderator:  think → judge (continue / conclude)
+    ↓
+Moderator generates structured meeting minutes
+```
+
+## API Overview
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| POST | `/api/sessions` | Create discussion |
+| GET | `/api/sessions` | List discussions |
+| GET | `/api/sessions/{id}` | Get details |
+| POST | `/api/sessions/{id}/clarify` | Clarify topic |
+| POST | `/api/sessions/{id}/refine` | Refine topic |
+| POST | `/api/sessions/{id}/suggest-positions` | Suggest debate angles |
+| POST | `/api/sessions/{id}/start` | Start debate |
+| POST | `/api/sessions/{id}/data-pool` | Add user data |
+| GET | `/api/sessions/{id}/stream` | SSE event stream |
+| GET | `/api/sessions/{id}/minutes` | Get meeting minutes |
+
+## Environment Variables
+
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `LLM_API_KEY` | Yes | LLM API key (also used for search) |
+| `LLM_MODEL` | No | Default model (`openai/glm-5.1`) |
+| `LLM_BASE_URL` | No | API endpoint (default: Zhipu) |
+| `SEARCH_PROVIDER` | No | `zhipu` to enable, empty to disable |
+| `ENABLE_COT` | No | Chain-of-thought toggle (`true` by default) |
+
+## Project Structure
 
 ```
 backend/
   app/
-    main.py              # FastAPI 入口
-    config.py            # 环境变量配置
+    main.py              # FastAPI entry
+    config.py            # pydantic-settings + YAML model routing
     routers/
-      session.py         # REST API
-      sse.py             # SSE 实时流
+      session.py         # REST API (CRUD + debate control + data pool)
+      sse.py             # SSE real-time events
     services/
-      orchestrator.py    # 讨论编排（后端独立运行）
-      llm.py             # LiteLLM 异步流式
-      search.py          # 多提供商搜索
+      orchestrator.py    # Debate orchestration (runs independently)
+      llm.py             # LiteLLM acompletion + structured output
+      search.py          # Zhipu MCP search
     agents/
-      base.py            # Agent 基类
-      moderator.py       # 主持人
-      perspective.py     # 角度嘉宾
-      scorer.py          # 评分
-      prompts/           # Prompt 模板
-    models/session.py    # 数据模型
-    storage/             # 持久化层
-  tests/                 # 15 个测试
+      base.py            # Agent base (system context + DebaterState)
+      moderator.py       # Moderator (clarify/suggest/boundaries/guide/minutes)
+      perspective.py     # Debater (mandatory citations + thinking + state)
+      data_clerk.py      # Data researcher (search/screen/extract/validate)
+      prompts/           # Prompt templates (.md)
+    models/
+      session.py         # SQLAlchemy async models
+      schemas.py         # Pydantic structured output schemas
+    storage/
+      database.py        # Async engine + idempotent migrations
+      repository.py      # Data access layer
+  tests/                 # 152 tests
 frontend/
   src/
-    pages/               # 4 个页面
-    components/          # ChatStream, ScorePanel
-    hooks/               # useSSE
-    lib/                 # API 客户端
+    pages/               # Home, Positions, Discussion, Minutes
+    components/
+      ChatStream.tsx     # Token-level streaming + [N] citations + thinking panels
+      DataPoolPanel.tsx  # Shared data pool (grouped by round)
+      SessionCard.tsx    # Session list card
+    hooks/
+      useSSE.ts          # SSE auto-reconnect with lastEventId replay
+    lib/
+      api.ts             # Typed API client
 ```
 
-## 环境变量
+## Testing
 
-| 变量 | 必需 | 说明 |
-|------|------|------|
-| `LLM_API_KEY` | 是 | LLM API 密钥 |
-| `LLM_MODEL` | 否 | 默认 `glm-5.1` |
-| `LLM_BASE_URL` | 否 | 默认智谱 API |
-| `SEARCH_PROVIDER` | 否 | `zhipu` / `tavily`，留空禁用 |
+```bash
+cd backend
+python -m pytest tests/ -v
+```
+
+## Cost Estimate
+
+Default config (3 angles, 3 rounds): ~31 LLM calls, 30k-50k tokens per debate.
+
+| Provider | Cost/Debate |
+|----------|-------------|
+| Zhipu GLM-5.1 | ~¥0.1-0.3 |
+| GPT-4o-mini | ~$0.02-0.05 |
 
 ## License
 
