@@ -15,18 +15,31 @@ MCP_READER_URL = "https://open.bigmodel.cn/api/mcp/web_reader/mcp"
 
 
 class SearchResult:
-    def __init__(self, title: str, snippet: str, url: str):
+    def __init__(self, title: str, snippet: str, url: str, publish_date: str = ""):
         self.title = title
         self.snippet = snippet
         self.url = url
+        self.publish_date = publish_date
 
     def to_dict(self):
-        return {"title": self.title, "snippet": self.snippet, "url": self.url}
+        d = {"title": self.title, "snippet": self.snippet, "url": self.url}
+        if self.publish_date:
+            d["publish_date"] = self.publish_date
+        return d
+
+
+# Recency filter values: oneDay/oneWeek/oneMonth/oneYear/noLimit
+# Maps to Tavily `days` parameter (Zhipu uses the string directly)
+RECENCY_DAY_MAP: dict[str, int | None] = {
+    "oneDay": 1, "oneWeek": 7, "oneMonth": 30, "oneYear": 365, "noLimit": None,
+}
 
 
 class SearchProvider(ABC):
     @abstractmethod
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, max_results: int = 5, recency: str = "noLimit",
+    ) -> list[SearchResult]:
         ...
 
 
@@ -60,6 +73,7 @@ def _extract_results(raw_text: str) -> list[SearchResult]:
                     title=item.get("title", ""),
                     snippet=item.get("content", ""),
                     url=item.get("link", ""),
+                    publish_date=item.get("date", ""),
                 )
                 for item in items
             ]
@@ -75,7 +89,9 @@ class ZhipuMCPSearchProvider(SearchProvider):
     def __init__(self, api_key: str):
         self.api_key = api_key
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, max_results: int = 5, recency: str = "noLimit",
+    ) -> list[SearchResult]:
         headers = {
             "Authorization": f"Bearer {self.api_key}",
             "Content-Type": "application/json",
@@ -105,16 +121,20 @@ class ZhipuMCPSearchProvider(SearchProvider):
                 })
 
                 # 3. Search call
+                arguments = {
+                    "search_query": query,
+                    "location": "cn",
+                    "content_size": "high",
+                }
+                if recency != "noLimit":
+                    arguments["search_recency_filter"] = recency
+
                 search_resp = await client.post(MCP_SEARCH_URL, headers=headers, json={
                     "jsonrpc": "2.0",
                     "method": "tools/call",
                     "params": {
                         "name": "web_search_prime",
-                        "arguments": {
-                            "search_query": query,
-                            "location": "cn",
-                            "content_size": "high",
-                        },
+                        "arguments": arguments,
                     },
                     "id": 2,
                 })
@@ -148,16 +168,23 @@ class TavilySearchProvider(SearchProvider):
         self.api_key = api_key
         self._client = httpx.AsyncClient(timeout=30)
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, max_results: int = 5, recency: str = "noLimit",
+    ) -> list[SearchResult]:
         try:
+            params = {
+                "api_key": self.api_key,
+                "query": query,
+                "max_results": max_results,
+                "search_depth": "basic",
+            }
+            days = RECENCY_DAY_MAP.get(recency)
+            if days is not None:
+                params["days"] = days
+
             resp = await self._client.post(
                 "https://api.tavily.com/search",
-                json={
-                    "api_key": self.api_key,
-                    "query": query,
-                    "max_results": max_results,
-                    "search_depth": "basic",
-                },
+                json=params,
             )
             if resp.status_code != 200:
                 logger.warning("Tavily search failed: %d", resp.status_code)
@@ -168,6 +195,7 @@ class TavilySearchProvider(SearchProvider):
                     title=item.get("title", ""),
                     snippet=item.get("content", ""),
                     url=item.get("url", ""),
+                    publish_date=item.get("published_date", ""),
                 )
                 for item in data.get("results", [])
             ]
@@ -182,7 +210,9 @@ class TavilySearchProvider(SearchProvider):
 class NoOpSearchProvider(SearchProvider):
     """Returns empty results when search is disabled."""
 
-    async def search(self, query: str, max_results: int = 5) -> list[SearchResult]:
+    async def search(
+        self, query: str, max_results: int = 5, recency: str = "noLimit",
+    ) -> list[SearchResult]:
         return []
 
     async def close(self):
@@ -197,6 +227,14 @@ def get_search_provider() -> SearchProvider:
     elif provider == "tavily" and settings.tavily_api_key:
         return TavilySearchProvider(settings.tavily_api_key)
     return NoOpSearchProvider()
+
+
+def get_statmuse_provider() -> "StatMuseProvider | None":
+    """Create StatMuse provider if enabled in config."""
+    if settings.statmuse_enabled:
+        from app.services.statmuse import StatMuseProvider
+        return StatMuseProvider()
+    return None
 
 
 async def fetch_page_content(url: str, timeout: int = 30) -> str:

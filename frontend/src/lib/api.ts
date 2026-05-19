@@ -22,7 +22,10 @@ export interface SessionListItem {
   topic: string;
   status: string;
   current_round: number;
+  max_rounds: number;
   created_at: string | null;
+  completed_at: string | null;
+  winner: string;
 }
 
 export interface ClarifyResponse {
@@ -43,7 +46,7 @@ export interface SuggestPositionsResponse {
   positions: PositionSuggestion[];
   data_clerk_recommended: boolean;
   data_clerk_reason: string;
-  preliminary_data: Array<{ title: string; snippet: string; url: string }> | null;
+  preliminary_data: Array<{ title: string; snippet: string; url: string; publish_date: string }> | null;
 }
 
 export interface MessageResponse {
@@ -94,8 +97,27 @@ export async function getSession(sessionId: string): Promise<SessionResponse> {
   return request<SessionResponse>(`${API_BASE}/sessions/${sessionId}`);
 }
 
-export async function listSessions(): Promise<SessionListItem[]> {
-  return request<SessionListItem[]>(`${API_BASE}/sessions`);
+export async function listSessions(params?: { status?: string; search?: string; limit?: number; offset?: number }): Promise<SessionListItem[]> {
+  const qs = new URLSearchParams();
+  if (params?.status) qs.set("status", params.status);
+  if (params?.search) qs.set("search", params.search);
+  if (params?.limit) qs.set("limit", String(params.limit));
+  if (params?.offset) qs.set("offset", String(params.offset));
+  const query = qs.toString();
+  return request<SessionListItem[]>(`${API_BASE}/sessions${query ? `?${query}` : ""}`);
+}
+
+export async function deleteSession(sessionId: string): Promise<void> {
+  const res = await fetch(`${API_BASE}/sessions/${sessionId}`, { method: "DELETE" });
+  if (!res.ok) throw new Error(res.statusText);
+}
+
+export async function updateSession(sessionId: string, topic: string): Promise<{ session_id: string; topic: string }> {
+  return request(`${API_BASE}/sessions/${sessionId}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ topic }),
+  });
 }
 
 export async function clarifyTopic(sessionId: string): Promise<void> {
@@ -145,11 +167,30 @@ export async function getMessages(sessionId: string): Promise<MessageResponse[]>
 
 export interface DataPoolItem {
   id: string;
-  source: "data_clerk" | "user";
+  citation_num: number;
+  source: string;
   title: string;
   snippet: string;
   url: string;
+  publish_date: string;
+  key_facts: string | null;
   round_number: number | null;
+  created_at: string | null;
+}
+
+export interface PositionItem {
+  id: string;
+  name: string;
+  description: string;
+  is_custom: boolean;
+}
+
+export async function getDataPool(sessionId: string): Promise<DataPoolItem[]> {
+  return request<DataPoolItem[]>(`${API_BASE}/sessions/${sessionId}/data-pool`);
+}
+
+export async function getPositions(sessionId: string): Promise<PositionItem[]> {
+  return request<PositionItem[]>(`${API_BASE}/sessions/${sessionId}/positions`);
 }
 
 export async function addUserData(

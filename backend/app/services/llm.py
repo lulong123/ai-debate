@@ -31,13 +31,15 @@ async def stream_completion(
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    api_key: str | None = None,
+    api_base: str | None = None,
 ) -> AsyncGenerator[str, None]:
     """Stream token-level output from LLM. Yields content chunks."""
     model = model or settings.llm_model
     temperature = temperature or settings.llm_temperature
     max_tokens = max_tokens or settings.llm_max_tokens
-
-    api_base = settings.llm_base_url or None
+    api_key = api_key or settings.llm_api_key or None
+    api_base = api_base or settings.llm_base_url or None
 
     async with _llm_semaphore:
         response = await litellm.acompletion(
@@ -46,7 +48,7 @@ async def stream_completion(
             temperature=temperature,
             max_tokens=max_tokens,
             stream=True,
-            api_key=settings.llm_api_key or None,
+            api_key=api_key,
             api_base=api_base,
             timeout=120,
             num_retries=0,
@@ -78,13 +80,15 @@ async def complete(
     model: str | None = None,
     temperature: float | None = None,
     max_tokens: int | None = None,
+    api_key: str | None = None,
+    api_base: str | None = None,
 ) -> str:
     """Non-streaming completion. Returns full response text."""
     model = model or settings.llm_model
     temperature = temperature or settings.llm_temperature
     max_tokens = max_tokens or settings.llm_max_tokens
-
-    api_base = settings.llm_base_url or None
+    api_key = api_key or settings.llm_api_key or None
+    api_base = api_base or settings.llm_base_url or None
 
     response = await _call_with_retry(
         litellm.acompletion,
@@ -93,7 +97,7 @@ async def complete(
         temperature=temperature,
         max_tokens=max_tokens,
         stream=False,
-        api_key=settings.llm_api_key or None,
+        api_key=api_key,
         api_base=api_base,
         timeout=120,
         num_retries=0,
@@ -105,10 +109,13 @@ async def complete(
 async def complete_json(
     messages: list[dict],
     model: str | None = None,
+    api_key: str | None = None,
+    api_base: str | None = None,
 ) -> dict:
     """Complete with forced JSON mode. Returns {} on parse failure."""
     model_name = model or settings.llm_model
-    api_base = settings.llm_base_url or None
+    api_key = api_key or settings.llm_api_key or None
+    api_base = api_base or settings.llm_base_url or None
 
     response = await _call_with_retry(
         litellm.acompletion,
@@ -117,7 +124,7 @@ async def complete_json(
         temperature=0.3,
         max_tokens=settings.llm_max_tokens,
         stream=False,
-        api_key=settings.llm_api_key or None,
+        api_key=api_key,
         api_base=api_base,
         timeout=120,
         num_retries=0,
@@ -141,22 +148,34 @@ async def complete_typed(
     messages: list[dict],
     response_model: type[T],
     model: str | None = None,
+    api_key: str | None = None,
+    api_base: str | None = None,
 ) -> T:
     """Complete with forced JSON mode, validate against Pydantic model.
 
     Falls back to model defaults if validation fails.
     """
     model_name = model or settings.llm_model
-    api_base = settings.llm_base_url or None
+    api_key = api_key or settings.llm_api_key or None
+    api_base = api_base or settings.llm_base_url or None
+
+    # Inject JSON schema into last user message so model knows exact structure
+    schema = response_model.model_json_schema()
+    schema_hint = f"\n\n请严格按照以下JSON Schema返回，不要包裹在markdown代码块中：\n{json.dumps(schema, ensure_ascii=False, indent=2)}"
+    augmented = list(messages)
+    if augmented and augmented[-1]["role"] == "user":
+        augmented[-1] = {**augmented[-1], "content": augmented[-1]["content"] + schema_hint}
+    else:
+        augmented.append({"role": "user", "content": schema_hint})
 
     response = await _call_with_retry(
         litellm.acompletion,
         model=model_name,
-        messages=messages,
+        messages=augmented,
         temperature=0.3,
         max_tokens=settings.llm_max_tokens,
         stream=False,
-        api_key=settings.llm_api_key or None,
+        api_key=api_key,
         api_base=api_base,
         timeout=120,
         num_retries=0,
@@ -164,6 +183,11 @@ async def complete_typed(
     )
 
     text = response.choices[0].message.content or ""
+    # Extract JSON from markdown code blocks (Anthropic endpoint wraps JSON)
+    if "```json" in text:
+        text = text.split("```json")[1].split("```")[0]
+    elif "```" in text:
+        text = text.split("```")[1].split("```")[0]
     try:
         data = json.loads(text.strip())
         return response_model.model_validate(data)
@@ -173,11 +197,11 @@ async def complete_typed(
             response_model.__name__, e, text[:200],
         )
         # Try partial parsing: salvage valid fields from raw JSON
-        if isinstance(data, dict):
-            try:
+        try:
+            if isinstance(data, dict):
                 return _partial_validate(response_model, data)
-            except Exception:
-                pass
+        except Exception:
+            pass
         return response_model()
 
 

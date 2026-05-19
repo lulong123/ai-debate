@@ -1,13 +1,14 @@
 import { useEffect, useRef, useState } from "react";
 import type { SSEEvent } from "../hooks/useSSE";
-import { addUserData } from "../lib/api";
+import { addUserData, type DataPoolItem } from "../lib/api";
 
 interface DataItem {
   id: string;
-  source: "data_clerk" | "user";
+  source: string;
   title: string;
   snippet: string;
   url: string;
+  publish_date: string;
   round_number: number | null;
   agent_name?: string;
   citationNum?: number;
@@ -17,10 +18,21 @@ interface DataItem {
 interface DataPoolPanelProps {
   sessionId: string;
   events: SSEEvent[];
+  initialPool?: DataPoolItem[] | null;
   isActive: boolean;
 }
 
-export function DataPoolPanel({ sessionId, events, isActive }: DataPoolPanelProps) {
+function parseKeyFacts(kf: string | null | undefined): string[] | undefined {
+  if (!kf) return undefined;
+  try {
+    const parsed = JSON.parse(kf);
+    return parsed.key_facts;
+  } catch {
+    return undefined;
+  }
+}
+
+export function DataPoolPanel({ sessionId, events, initialPool, isActive }: DataPoolPanelProps) {
   const [items, setItems] = useState<DataItem[]>([]);
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const [title, setTitle] = useState("");
@@ -28,52 +40,79 @@ export function DataPoolPanel({ sessionId, events, isActive }: DataPoolPanelProp
   const [url, setUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const processedRef = useRef(0);
-  const citationCounter = useRef(0);
 
+  // Initialize from API data (authoritative citation nums)
+  useEffect(() => {
+    if (!initialPool || initialPool.length === 0) return;
+    const apiItems: DataItem[] = initialPool.map((item) => ({
+      id: item.id,
+      source: item.source,
+      title: item.title,
+      snippet: item.snippet,
+      url: item.url,
+      publish_date: item.publish_date || "",
+      round_number: item.round_number,
+      citationNum: item.citation_num,
+      keyFacts: parseKeyFacts(item.key_facts),
+    }));
+    setItems(apiItems);
+  }, [initialPool]);
+
+  // Process SSE events — merge with existing items
   useEffect(() => {
     const newEvents = events.slice(processedRef.current);
     processedRef.current = events.length;
 
     for (const event of newEvents) {
       if (event.type === "data_fetch_complete") {
-        const results = (event.results as Array<{ title: string; snippet: string; url: string; key_facts?: string }>) ?? [];
+        const results = (event.results as Array<{ title: string; snippet: string; url: string; key_facts?: string; publish_date?: string }>) ?? [];
         const round = event.round as number;
         const agentName = event.agent_name as string;
-        const newItems: DataItem[] = results.map((r, i) => {
-          let keyFacts: string[] | undefined;
-          if (r.key_facts) {
-            try {
-              const parsed = JSON.parse(r.key_facts);
-              keyFacts = parsed.key_facts;
-            } catch { /* ignore */ }
+
+        setItems((prev) => {
+          // Track existing URLs to avoid duplicates
+          const existingUrls = new Set(prev.map((i) => i.url).filter(Boolean));
+          // Find max citation number
+          let maxCitation = prev.reduce((max, i) => Math.max(max, i.citationNum ?? 0), 0);
+
+          const newItems: DataItem[] = [];
+          for (const r of results) {
+            if (r.url && existingUrls.has(r.url)) continue;
+            maxCitation++;
+            newItems.push({
+              id: `dc_${round}_${Date.now()}_${newItems.length}`,
+              source: "data_clerk",
+              title: r.title,
+              snippet: r.snippet,
+              url: r.url,
+              publish_date: r.publish_date || "",
+              round_number: round,
+              agent_name: agentName,
+              citationNum: maxCitation,
+              keyFacts: parseKeyFacts(r.key_facts),
+            });
+            if (r.url) existingUrls.add(r.url);
           }
-          return {
-            id: `dc_${round}_${event.message_id}_${i}`,
-            source: "data_clerk" as const,
-            title: r.title,
-            snippet: r.snippet,
-            url: r.url,
-            round_number: round,
-            agent_name: agentName,
-            citationNum: ++citationCounter.current,
-            keyFacts,
-          };
+          return [...prev, ...newItems];
         });
-        setItems((prev) => [...prev, ...newItems]);
       }
 
       if (event.type === "user_data_added") {
-        const data = event.data as DataItem;
+        const data = event.data as { id?: string; title?: string; snippet?: string; content?: string; url?: string; round_number?: number };
         if (data) {
-          setItems((prev) => [...prev, {
-            id: data.id || `user_${Date.now()}`,
-            source: "user",
-            title: data.title,
-            snippet: data.snippet,
-            url: data.url,
-            round_number: data.round_number,
-            citationNum: ++citationCounter.current,
-          }]);
+          setItems((prev) => {
+            const maxCitation = prev.reduce((max, i) => Math.max(max, i.citationNum ?? 0), 0);
+            return [...prev, {
+              id: data.id || `user_${Date.now()}`,
+              source: "user",
+              title: data.title || "",
+              snippet: data.snippet || data.content || "",
+              url: data.url || "",
+              publish_date: "",
+              round_number: data.round_number ?? null,
+              citationNum: maxCitation + 1,
+            }];
+          });
         }
       }
     }
@@ -149,6 +188,9 @@ export function DataPoolPanel({ sessionId, events, isActive }: DataPoolPanelProp
                       {isUser ? "用户" : item.agent_name || "搜索"}
                     </span>
                     <span className="font-medium text-neutral-300">{item.title}</span>
+                    {item.publish_date && (
+                      <span className="text-neutral-500 text-[10px] shrink-0">{item.publish_date}</span>
+                    )}
                   </div>
                   {item.keyFacts && item.keyFacts.length > 0 ? (
                     <ul className={`text-neutral-400 mt-1 space-y-0.5 ${!isExpanded ? "line-clamp-3" : ""}`}

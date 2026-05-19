@@ -1,0 +1,161 @@
+# ============================================================================
+# Multi-Model LLM Configuration
+# ============================================================================
+# 每个条目指定一个 agent 角色（role）使用的模型。
+# role 可以是：default, moderator, debater, scorer, data_clerk
+# - "default" 是所有未单独配置的角色的回退模型（必须至少有一个）
+# - 同一个 role 只有第一个未被注释的条目生效
+# - $VAR 语法引用 .env 中的环境变量
+#
+# 使用方法：
+#   1. cp config.example.yaml config.yaml
+#   2. 取消注释你想用的模型
+#   3. 在 .env 中填入对应的 API key
+#
+# LiteLLM 支持的完整供应商列表：https://docs.litellm.ai/docs/providers
+
+models:
+  # ============================================================================
+  # GLM (智谱) — 默认启用
+  # ============================================================================
+  - role: default
+    model: openai/glm-5.1
+    api_key: $LLM_API_KEY
+    base_url: https://open.bigmodel.cn/api/paas/v4
+
+  # ============================================================================
+  # OpenAI GPT
+  # ============================================================================
+  # - role: default
+  #   model: openai/gpt-4o
+  #   api_key: $OPENAI_API_KEY
+  #   base_url: https://api.openai.com/v1
+
+  # - role: moderator
+  #   model: openai/gpt-4o
+  #   api_key: $OPENAI_API_KEY
+
+  # - role: debater
+  #   model: openai/gpt-4o-mini
+  #   api_key: $OPENAI_API_KEY
+
+  # ============================================================================
+  # Anthropic Claude
+  # ============================================================================
+  # - role: moderator
+  #   model: anthropic/claude-sonnet-4-6
+  #   api_key: $ANTHROPIC_API_KEY
+
+  # - role: debater
+  #   model: anthropic/claude-sonnet-4-6
+  #   api_key: $ANTHROPIC_API_KEY
+
+  # - role: scorer
+  #   model: anthropic/claude-haiku-4-5
+  #   api_key: $ANTHROPIC_API_KEY
+
+  # ============================================================================
+  # DeepSeek
+  # ============================================================================
+  # - role: debater
+  #   model: deepseek/deepseek-chat
+  #   api_key: $DEEPSEEK_API_KEY
+  #   base_url: https://api.deepseek.com
+
+  # - role: data_clerk
+  #   model: deepseek/deepseek-chat
+  #   api_key: $DEEPSEEK_API_KEY
+  #   base_url: https://api.deepseek.com
+
+  # ============================================================================
+  # Google Gemini
+  # ============================================================================
+  # - role: scorer
+  #   model: gemini/gemini-2.5-pro
+  #   api_key: $GEMINI_API_KEY
+
+  # - role: debater
+  #   model: gemini/gemini-2.5-flash
+  #   api_key: $GEMINI_API_KEY
+
+  # ============================================================================
+  # Moonshot (月之暗面 / Kimi)
+  # ============================================================================
+  # - role: debater
+  #   model: openai/moonshot-v1-auto
+  #   api_key: $MOONSHOT_API_KEY
+  #   base_url: https://api.moonshot.cn/v1
+
+  # - role: data_clerk
+  #   model: openai/moonshot-v1-128k
+  #   api_key: $MOONSHOT_API_KEY
+  #   base_url: https://api.moonshot.cn/v1
+
+  # ============================================================================
+  # 百度文心 (ERNIE)
+  # ============================================================================
+  # - role: data_clerk
+  #   model: openai/ernie-4.0-8k
+  #   api_key: $ERNIE_API_KEY
+  #   base_url: https://aip.baidubce.com/rpc/2.0/ai_custom/v1/wenxinworkshop
+
+  # ============================================================================
+  # 阿里通义千问 (Qwen)
+  # ============================================================================
+  # - role: debater
+  #   model: openai/qwen-max
+  #   api_key: $QWEN_API_KEY
+  #   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+  # - role: debater
+  #   model: openai/qwen-plus
+  #   api_key: $QWEN_API_KEY
+  #   base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+
+  # ============================================================================
+  # Ollama (本地模型)
+  # ============================================================================
+  # - role: scorer
+  #   model: openai/qwen3:32b
+  #   api_key: ollama
+  #   base_url: http://localhost:11434/v1
+
+  # - role: data_clerk
+  #   model: openai/llama3:70b
+  #   api_key: ollama
+  #   base_url: http://localhost:11434/v1
+
+  # ============================================================================
+  # 讯飞星火 (Spark)
+  # ============================================================================
+  # - role: debater
+  #   model: openai/spark-4.0-ultra
+  #   api_key: $SPARK_API_KEY
+  #   base_url: https://spark-api-open.xf-yun.com/v1
+
+  # ============================================================================
+  # 字节豆包 (Doubao) / Volcengine
+  # ============================================================================
+  # - role: debater
+  #   model: openai/doubao-pro-32k
+  #   api_key: $VOLCENGINE_API_KEY
+  #   base_url: https://ark.cn-beijing.volces.com/api/v3
+
+  # ============================================================================
+  # MiniMax
+  # ============================================================================
+  # - role: debater
+  #   model: openai/MiniMax-M2.5
+  #   api_key: $MINIMAX_API_KEY
+  #   base_url: https://api.minimaxi.com/v1
+
+  # ============================================================================
+  # OpenRouter (多供应商聚合)
+  # ============================================================================
+  # - role: moderator
+  #   model: openrouter/anthropic/claude-sonnet-4-6
+  #   api_key: $OPENROUTER_API_KEY
+
+  # - role: debater
+  #   model: openrouter/openai/gpt-4o
+  #   api_key: $OPENROUTER_API_KEY

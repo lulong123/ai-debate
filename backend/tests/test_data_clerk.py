@@ -7,15 +7,13 @@ from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_asyn
 
 import json
 
-from app.agents.data_clerk import MAX_QUERIES, MAX_TOTAL_RESULTS, DataClerkAgent
+from app.agents.data_clerk import MAX_QUERIES, MAX_TOTAL_RESULTS, DataClerkAgent, format_result_with_facts
 from app.models.schemas import (
     AgentThinking,
     CrossValidatedFacts,
     DebateMinutes,
     ExtractedFacts,
     RoundJudgment,
-    ScoreEntry,
-    ScoreResult,
     SearchQueries,
     Verdict,
 )
@@ -126,11 +124,6 @@ async def _make_mock_typed(pos1_id, pos2_id):
             )
         if response_model is SearchQueries:
             return SearchQueries(searches=["测试查询"])
-        if response_model is ScoreResult:
-            return ScoreResult(scores=[
-                ScoreEntry(position_id=pos1_id, position_name="梅西", points=60, comment=""),
-                ScoreEntry(position_id=pos2_id, position_name="C罗", points=40, comment=""),
-            ])
         if response_model is RoundJudgment:
             return RoundJudgment(decision="CONCLUDE", reason="充分", guidance="")
         if response_model is DebateMinutes:
@@ -308,7 +301,7 @@ async def test_extract_facts_batch_parallel():
         {"title": "No URL", "snippet": "s3", "url": ""},
     ]
 
-    async def mock_extract_facts(url, query, fallback_content=""):
+    async def mock_extract_facts(url, query, fallback_content="", topic=""):
         if "a.com" in url:
             return ExtractedFacts(key_facts=["fact A1", "fact A2"], summary="Summary A")
         return ExtractedFacts(key_facts=["fact B1"], summary="Summary B")
@@ -395,3 +388,125 @@ async def test_data_pool_item_with_key_facts(db: AsyncSession):
     # Verify to_dict includes key_facts
     d = item.to_dict()
     assert d["key_facts"] == key_facts_json
+
+
+# --- format_result_with_facts tests ---
+
+
+def test_format_result_with_facts_has_facts():
+    """Should show structured bullet points when key_facts are available."""
+    r = {
+        "title": "哈登35分8板10助",
+        "snippet": "NBA常规赛...",
+        "url": "https://example.com/game",
+        "key_facts": json.dumps({
+            "key_facts": ["哈登得到35分8篮板10助攻", "火箭120-115获胜"],
+            "summary": "哈登全场最佳",
+        }),
+    }
+    result = format_result_with_facts(r)
+    assert "哈登得到35分" in result
+    assert "·" in result
+    assert "火箭120-115" in result
+    assert "来源" in result
+    # Should NOT show raw snippet
+    assert "NBA常规赛" not in result
+
+
+def test_format_result_with_facts_no_facts():
+    """Should fall back to title + snippet when no key_facts."""
+    r = {
+        "title": "NBA战报",
+        "snippet": "哈登35分",
+        "url": "https://example.com",
+    }
+    result = format_result_with_facts(r)
+    assert "NBA战报" in result
+    assert "哈登35分" in result
+    assert "来源" in result
+
+
+def test_format_result_with_facts_empty_facts():
+    """Should fall back to snippet when key_facts is empty list."""
+    r = {
+        "title": "Test",
+        "snippet": "snippet text",
+        "url": "",
+        "key_facts": json.dumps({"key_facts": [], "summary": ""}),
+    }
+    result = format_result_with_facts(r)
+    assert "snippet text" in result
+
+
+def test_format_result_with_facts_bad_json():
+    """Should fall back gracefully when key_facts JSON is malformed."""
+    r = {
+        "title": "Broken",
+        "snippet": "fallback text",
+        "key_facts": "not valid json{{{",
+    }
+    result = format_result_with_facts(r)
+    assert "fallback text" in result
+
+
+def test_format_result_with_facts_no_url():
+    """Should work without URL."""
+    r = {
+        "title": "No URL Article",
+        "snippet": "some content",
+        "key_facts": json.dumps({"key_facts": ["fact1"], "summary": ""}),
+    }
+    result = format_result_with_facts(r)
+    assert "来源" not in result
+    assert "fact1" in result
+
+
+# --- _filter_by_relevance tests ---
+
+
+def test_filter_by_relevance_keeps_matching():
+    """Should keep results whose facts contain keywords from relevant_facts."""
+    results = [
+        {
+            "title": "G3战报",
+            "key_facts": json.dumps({
+                "key_facts": ["湖人108-131负雷霆，詹姆斯19分6板8助", "系列赛0-3落后"],
+            }),
+        },
+        {
+            "title": "G2战报",
+            "key_facts": json.dumps({
+                "key_facts": ["哈登37分8板9助，雷霆109-104胜湖人"],
+            }),
+        },
+    ]
+    # "詹姆斯19分" only appears in G3, "哈登37分" only appears in G2
+    relevant_facts = ["詹姆斯19分6板8助"]
+    kept = DataClerkAgent._filter_by_relevance(results, relevant_facts)
+    assert len(kept) == 1
+    assert kept[0]["title"] == "G3战报"
+
+
+def test_filter_by_relevance_keeps_no_facts():
+    """Should keep results without key_facts (no extraction happened)."""
+    results = [
+        {"title": "Raw result", "snippet": "no extraction"},
+    ]
+    kept = DataClerkAgent._filter_by_relevance(results, ["something"])
+    assert len(kept) == 1
+
+
+def test_filter_by_relevance_empty_relevant():
+    """Should return all results when relevant_facts is empty."""
+    results = [{"title": "A"}, {"title": "B"}]
+    kept = DataClerkAgent._filter_by_relevance(results, [])
+    assert len(kept) == 2
+
+
+def test_filter_by_relevance_bad_json():
+    """Should keep results with malformed key_facts."""
+    results = [
+        {"title": "Bad", "key_facts": "not json"},
+    ]
+    kept = DataClerkAgent._filter_by_relevance(results, ["keyword"])
+    assert len(kept) == 1

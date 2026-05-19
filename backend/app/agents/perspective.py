@@ -9,12 +9,19 @@ _PROMPT_TEMPLATE = load_prompt("perspective.md")
 
 class PerspectiveAgent(BaseAgent):
     def __init__(self, position_id: str, position_name: str, position_description: str):
+        from app.config import settings
+        model, api_key, base_url = settings.get_model_config("debater")
         system_prompt = _PROMPT_TEMPLATE.format(
             position_name=position_name,
             position_description=position_description,
             context="",
         )
-        super().__init__(system_prompt=system_prompt)
+        super().__init__(
+            system_prompt=system_prompt,
+            model=model or None,
+            api_key=api_key or None,
+            base_url=base_url or None,
+        )
         self.position_id = position_id
         self.position_name = position_name
         self.position_description = position_description

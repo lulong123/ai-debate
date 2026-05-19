@@ -9,12 +9,62 @@ from app.models.schemas import (
     DebateMinutes,
     PositionsResult,
     RoundJudgment,
+    SubjectClarityCheck,
 )
 
 
 class ModeratorAgent(BaseAgent):
     def __init__(self):
-        super().__init__(system_prompt=load_prompt("moderator.md"))
+        from app.config import settings
+        model, api_key, base_url = settings.get_model_config("moderator")
+        super().__init__(
+            system_prompt=load_prompt("moderator.md"),
+            model=model or None,
+            api_key=api_key or None,
+            base_url=base_url or None,
+        )
+
+    async def check_subject_clarity(self, topic: str) -> SubjectClarityCheck:
+        """Quick check: is the main subject clear AND does the topic need search?
+
+        Returns subject_clear=False when entities are unknown/fabricated.
+        Returns needs_search=False when the topic is purely philosophical/abstract
+        and doesn't benefit from web data.
+        """
+        return await self.respond_typed(
+            SubjectClarityCheck,
+            context="",
+            user_message=(
+                f"快速判断以下议题是否需要启动网络搜索：\n\n「{topic}」\n\n"
+                "需要同时回答两个问题：\n\n"
+                "**1. 主体是否清晰？（subject_clear）**\n"
+                "主体不清晰的情况：\n"
+                "- 完全陌生、搜索引擎搜不到的人名/事物\n"
+                "- 编造/虚构的人物或事件\n"
+                "- 模糊指代（如「那个人」「最近那件事」）\n"
+                "主体清晰的情况：\n"
+                "- 真实公众人物、历史人物\n"
+                "- 具体事件、比赛、政策、产品\n"
+                "- 哲学/价值观类议题（主体本身就是抽象概念）\n\n"
+                "**2. 议题是否需要网络搜索？（needs_search）**\n"
+                "判断标准：只有需要**最新、实时、时效性强**的数据才需要搜索。"
+                "历史知识、文学常识、哲学观点等训练数据已充分覆盖的内容不需要搜索。\n"
+                "不需要搜索的情况（needs_search=false）：\n"
+                "- 纯哲学思辨（如「人性本善还是本恶」「自由与公平哪个更重要」）\n"
+                "- 纯逻辑推理（如「先有鸡还是先有蛋」）\n"
+                "- 纯价值观/道德讨论（如「善意的谎言是否可接受」）\n"
+                "- 文学/艺术鉴赏（如「李白和杜甫谁的诗更好」）\n"
+                "- 历史人物/事件评价（如「希望是好汉」「秦始皇功过」）\n"
+                "- 通用知识对比（如「爱因斯坦和牛顿谁更伟大」）\n"
+                "需要搜索的情况（needs_search=true）：\n"
+                "- 最近发生的新闻事件（如「今天的NBA比赛谁赢了」）\n"
+                "- 最新数据/统计/排名（如「2025年GDP排名」）\n"
+                "- 实时变化的对比（如「当前比特币和黄金哪个更值得投资」）\n"
+                "- 近期赛事/政策/产品发布等时效性话题\n\n"
+                '输出JSON：{"subject_clear": true/false, "needs_search": true/false, '
+                '"unclear_entities": ["不清晰的实体"], "reason": "简短原因"}'
+            ),
+        )
 
     async def think_before_clarifying(self, topic: str, data_context: str = "") -> AgentThinking:
         """First pass: free-form thinking before clarifying topic."""
@@ -62,7 +112,7 @@ class ModeratorAgent(BaseAgent):
             ),
         )
 
-    async def clarify_topic(self, topic: str, data_context: str = "") -> ClarifyResult:
+    async def clarify_topic(self, topic: str, data_context: str = "", round: int = 1) -> ClarifyResult:
         """Check if topic needs clarification. Returns typed result."""
         data_section = ""
         if data_context:
@@ -79,15 +129,32 @@ class ModeratorAgent(BaseAgent):
             context="",
             user_message=(
                 f"用户提交了以下问题：\n\n「{topic}」\n\n"
-                "判断这个问题是否足够清晰、可以直接展开辩论。\n\n"
-                "重要：大多数问题都不需要追问，直接返回 valid=true。"
-                "只有在问题极度模糊（如\"聊聊那个事\"、\"怎么样\"、无具体指向）时才追问。\n"
-                "不要追问评价标准、具体定义等细节——辩手会在辩论中自然展开这些讨论。\n"
+                f"当前是第 {round}/3 轮审议。\n\n"
+                "请按以下优先级判断：\n\n"
+                "**第一步：是否拒绝？**\n"
+                "如果议题满足以下任一条件，设置 rejected=true：\n"
+                "- 涉及敏感信息或违法违规内容\n"
+                "- 完全编造的、不存在的人物或事件（搜索数据也没有相关信息）\n"
+                "- 无意义的组合或纯粹恶搞（如\"爱因斯坦和孙悟空谁更强\"）\n"
+                "- 网络搜索也无法找到任何相关信息的陌生话题\n"
+                "拒绝时必须在 reason 中说明具体原因。\n\n"
+                "**第二步：是否需要追问？**\n"
+                "如果议题模糊、缺少关键信息（如\"那个人\"指谁、哪场比赛、哪个时间段），"
+                "设置 valid=false 并在 question 中提出具体追问。\n"
+                f"注意：当前是第 {round}/3 轮，如果是第3轮仍不清晰，建议拒绝。\n"
+                "大多数问题不需要追问，直接返回 valid=true。\n\n"
+                "**第三步：是否需要数据研究员？**\n"
+                "如果议题涉及具体数据、时事、人物对比、历史事实等需要实时信息的话题，"
+                "设置 need_data_clerk=true。\n"
+                "纯逻辑推理、价值观讨论、哲学命题等不需要，设为 false。\n\n"
                 f"{data_section}"
                 "输出JSON格式：\n"
-                '{"valid": true/false, "reason": "原因", '
-                '"question": "追问的问题（如果需要）", '
-                '"suggestion": "修改建议（如果有）"}'
+                '{"valid": true/false, "rejected": true/false, '
+                '"reason": "原因（拒绝时必填）", '
+                '"question": "追问的问题（valid=false时填写）", '
+                '"suggestion": "修改建议", '
+                '"need_data_clerk": true/false, '
+                f'"clarify_round": {round}' + '}'
             ),
         )
 

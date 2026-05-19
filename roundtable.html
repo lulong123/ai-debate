@@ -1,0 +1,593 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>AI 圆桌会议 - Round Table</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+
+  body {
+    width: 100vw; height: 100vh;
+    background: #0c1222;
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
+    overflow: hidden;
+    color: #e2e8f0;
+  }
+
+  /* 背景氛围 */
+  body::before {
+    content: '';
+    position: fixed; inset: 0;
+    background:
+      radial-gradient(ellipse at 50% 45%, rgba(30,58,138,0.12) 0%, transparent 55%),
+      radial-gradient(ellipse at 30% 70%, rgba(88,28,135,0.06) 0%, transparent 35%),
+      radial-gradient(ellipse at 75% 25%, rgba(6,78,59,0.06) 0%, transparent 35%);
+    pointer-events: none;
+  }
+
+  /* 标题栏 */
+  .title-bar {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 100;
+    display: flex; align-items: center; justify-content: center;
+    padding: 14px 24px;
+    background: rgba(12,18,34,0.85);
+    backdrop-filter: blur(12px);
+    border-bottom: 1px solid rgba(148,163,184,0.06);
+  }
+  .title-bar h1 {
+    font-size: 18px; font-weight: 600;
+    background: linear-gradient(135deg, #60a5fa, #a78bfa);
+    -webkit-background-clip: text; -webkit-text-fill-color: transparent;
+    letter-spacing: 3px;
+  }
+
+  /* 状态栏 */
+  .status-bar {
+    position: fixed;
+    top: 50px; left: 50%;
+    transform: translateX(-50%);
+    font-size: 11px; color: #475569;
+    z-index: 100;
+    display: flex; gap: 14px; align-items: center;
+  }
+  .status-dot {
+    width: 5px; height: 5px; border-radius: 50%;
+    background: #22c55e; display: inline-block; margin-right: 3px;
+    animation: blink-g 2s infinite;
+  }
+  @keyframes blink-g { 0%,100%{opacity:1} 50%{opacity:.4} }
+
+  /* ==============================
+     场景 - 用 flexbox 精确居中
+     ============================== */
+  .scene-center {
+    position: fixed; inset: 0;
+    display: flex; align-items: center; justify-content: center;
+    padding-top: 48px; padding-bottom: 64px;
+    z-index: 1;
+  }
+
+  .scene {
+    position: relative;
+    width: 800px; height: 560px;
+  }
+
+  /* ==============================
+     地板 - 椭圆形暗示俯视角度
+     ============================== */
+  .floor {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 750px; height: 460px;
+    border-radius: 50%;
+    background: radial-gradient(ellipse at 50% 50%, rgba(22,33,55,0.9) 0%, rgba(12,18,34,0.95) 65%, transparent 100%);
+    box-shadow: 0 0 80px rgba(0,0,0,0.3);
+  }
+  .floor::after {
+    content: '';
+    position: absolute; inset: 16px;
+    border-radius: 50%;
+    border: 1px solid rgba(148,163,184,0.03);
+  }
+
+  /* ==============================
+     2.5D 桌子
+     ============================== */
+  .table-group {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+  }
+
+  /* 桌子阴影 */
+  .table-shadow {
+    position: absolute;
+    top: 18px; left: 50%;
+    transform: translateX(-50%);
+    width: 320px; height: 190px;
+    border-radius: 50%;
+    background: rgba(0,0,0,0.4);
+    filter: blur(24px);
+  }
+
+  /* 桌子侧面/厚度 */
+  .table-rim {
+    position: absolute;
+    top: 6px; left: 50%;
+    transform: translateX(-50%);
+    width: 310px; height: 185px;
+    border-radius: 50%;
+    background: linear-gradient(180deg, #2d1f15 0%, #1a120c 100%);
+    box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+  }
+
+  /* 桌面 */
+  .table-top {
+    position: relative;
+    width: 310px; height: 185px;
+    border-radius: 50%;
+    background: linear-gradient(150deg, #5c4333 0%, #4a3728 25%, #3d2e22 55%, #4a3728 80%, #5c4333 100%);
+    border: 3px solid #2d1f15;
+    box-shadow:
+      inset 0 2px 0 rgba(255,255,255,0.06),
+      inset 0 -6px 16px rgba(0,0,0,0.25),
+      inset 6px 0 12px rgba(255,255,255,0.02),
+      inset -6px 0 12px rgba(0,0,0,0.15);
+    z-index: 2;
+    overflow: hidden;
+  }
+  /* 桌面木纹环 */
+  .table-top::before {
+    content: '';
+    position: absolute; inset: 14px;
+    border-radius: 50%;
+    border: 1px solid rgba(255,255,255,0.03);
+    box-shadow: inset 0 0 30px rgba(0,0,0,0.1);
+  }
+  /* 高光 */
+  .table-top::after {
+    content: '';
+    position: absolute;
+    top: 6%; left: 12%; width: 50%; height: 22%;
+    background: radial-gradient(ellipse, rgba(255,255,255,0.07) 0%, transparent 70%);
+    border-radius: 50%;
+  }
+
+  /* 桌面装饰 */
+  .table-decor {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    z-index: 3; pointer-events: none;
+  }
+  .table-decor .ring {
+    width: 90px; height: 54px;
+    border-radius: 50%;
+    border: 1px solid rgba(251,191,36,0.06);
+  }
+  .table-decor .ring::after {
+    content: '';
+    position: absolute; inset: 12px;
+    border-radius: 50%;
+    border: 1px solid rgba(251,191,36,0.04);
+  }
+  .table-icon {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    font-size: 20px; opacity: 0.1;
+    z-index: 3; pointer-events: none;
+  }
+
+  /* ==============================
+     椅子
+     ============================== */
+  .seat {
+    position: absolute;
+    width: 68px; height: 78px;
+    cursor: pointer;
+    transition: filter 0.3s;
+  }
+  .seat:hover { z-index: 50 !important; }
+  .seat:hover .chair-wrap { filter: brightness(1.2); }
+  .seat:hover .empty-marker { border-color: rgba(96,165,250,0.5); background: rgba(30,41,59,0.7); }
+
+  .chair-shadow {
+    position: absolute;
+    bottom: -3px; left: 50%;
+    transform: translateX(-50%);
+    width: 48px; height: 14px;
+    background: rgba(0,0,0,0.35);
+    border-radius: 50%;
+    filter: blur(5px);
+  }
+
+  .chair-wrap { transition: filter 0.3s; position: relative; width: 100%; height: 100%; }
+
+  /* 椅背 */
+  .chair-back {
+    position: absolute;
+    top: 0; left: 50%; transform: translateX(-50%);
+    width: 42px; height: 34px;
+    border-radius: 6px 6px 3px 3px;
+    background: linear-gradient(180deg, #3b82f6 0%, #2563eb 50%, #1d4ed8 100%);
+    border: 2px solid #1e40af;
+    box-shadow: inset 0 1px 0 rgba(255,255,255,0.1), 0 -1px 4px rgba(37,99,235,0.12);
+  }
+  .chair-back::before {
+    content: '';
+    position: absolute;
+    top: 5px; left: 5px; right: 5px; height: 2px;
+    background: rgba(255,255,255,0.12);
+    border-radius: 1px;
+    box-shadow: 0 7px 0 rgba(255,255,255,0.08), 0 14px 0 rgba(255,255,255,0.04);
+  }
+
+  /* 椅面 */
+  .chair-cushion {
+    position: absolute;
+    top: 32px; left: 50%; transform: translateX(-50%);
+    width: 50px; height: 14px;
+    border-radius: 3px;
+    background: linear-gradient(180deg, #2563eb 0%, #1d4ed8 100%);
+    border: 2px solid #1e40af;
+    box-shadow: 0 2px 6px rgba(0,0,0,0.3);
+  }
+
+  /* 椅腿 */
+  .leg-l, .leg-r {
+    position: absolute; bottom: 0;
+    width: 3px; height: 26px;
+    background: linear-gradient(90deg, #475569, #64748b, #475569);
+    border-radius: 0 0 1px 1px;
+  }
+  .leg-l { left: 14px; }
+  .leg-r { right: 14px; }
+
+  /* ==============================
+     空位标记
+     ============================== */
+  .empty-marker {
+    position: absolute;
+    top: 50%; left: 50%;
+    transform: translate(-50%, -50%);
+    width: 40px; height: 40px;
+    border-radius: 50%;
+    border: 2px dashed rgba(148,163,184,0.2);
+    background: rgba(15,23,42,0.4);
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.3s;
+  }
+  .empty-marker svg { width: 16px; height: 16px; stroke: rgba(148,163,184,0.35); fill: none; stroke-width: 2; }
+
+  /* ==============================
+     Agent 角色
+     ============================== */
+  .agent {
+    position: absolute;
+    bottom: 10px; left: 50%;
+    transform: translateX(-50%);
+    width: 48px; height: 56px;
+    animation: pop 0.5s cubic-bezier(0.34,1.56,0.64,1) both;
+  }
+  @keyframes pop {
+    0% { transform: translateX(-50%) scale(0.3); opacity: 0; }
+    100% { transform: translateX(-50%) scale(1); opacity: 1; }
+  }
+
+  .agent-head {
+    position: absolute; top: 0; left: 50%; transform: translateX(-50%);
+    width: 24px; height: 24px; border-radius: 50%;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.3); z-index: 2;
+  }
+  .agent-eyes {
+    position: absolute; bottom: 5px; left: 50%; transform: translateX(-50%);
+    display: flex; gap: 5px;
+  }
+  .agent-eye {
+    width: 3.5px; height: 3.5px; background: #1e293b; border-radius: 50%;
+    animation: blink 5s infinite;
+  }
+  @keyframes blink { 0%,42%,58%,100%{transform:scaleY(1)} 50%{transform:scaleY(0.1)} }
+
+  .agent-torso {
+    position: absolute; top: 22px; left: 50%; transform: translateX(-50%);
+    width: 28px; height: 24px;
+    border-radius: 6px 6px 10px 10px;
+    box-shadow: 0 2px 4px rgba(0,0,0,0.2); z-index: 1;
+  }
+  .agent-arm-l, .agent-arm-r {
+    position: absolute; top: 25px;
+    width: 7px; height: 16px; border-radius: 4px; z-index: 0;
+  }
+  .agent-arm-l { left: 5px; transform: rotate(8deg); }
+  .agent-arm-r { right: 5px; transform: rotate(-8deg); }
+
+  /* 名牌 */
+  .agent-tag {
+    position: absolute;
+    bottom: -22px; left: 50%; transform: translateX(-50%);
+    white-space: nowrap;
+    padding: 2px 8px; border-radius: 6px;
+    background: rgba(12,18,34,0.92);
+    border: 1px solid rgba(148,163,184,0.12);
+    font-size: 10px; font-weight: 600;
+    text-align: center; line-height: 1.3;
+    z-index: 60;
+  }
+  .agent-tag .sub { display: block; font-size: 8px; color: #64748b; font-weight: 400; }
+
+  /* --- 主持人 --- */
+  .t-moderator .agent-head { background: linear-gradient(135deg, #fbbf24, #f59e0b); }
+  .t-moderator .agent-torso { background: linear-gradient(180deg, #1e40af, #1e3a8a); }
+  .t-moderator .agent-arm-l, .t-moderator .agent-arm-r { background: #1e3a8a; }
+  .t-moderator .agent-tag { color: #fbbf24; border-color: rgba(251,191,36,0.2); }
+  .t-moderator .chair-back { background: linear-gradient(180deg, #b45309, #92400e); border-color: #78350f; }
+  .t-moderator .chair-cushion { background: linear-gradient(180deg, #d97706, #b45309); border-color: #92400e; }
+  .crown {
+    position: absolute; top: -4px; left: 50%; transform: translateX(-50%);
+    font-size: 11px; filter: drop-shadow(0 0 3px rgba(251,191,36,0.5)); z-index: 3;
+  }
+  .tie {
+    position: absolute; top: 26px; left: 50%; transform: translateX(-50%);
+    width: 0; height: 0;
+    border-left: 3px solid transparent; border-right: 3px solid transparent;
+    border-top: 7px solid #fbbf24; z-index: 2;
+  }
+
+  /* --- 辩手 --- */
+  .t-debater .agent-head { background: linear-gradient(135deg, #60a5fa, #3b82f6); }
+  .t-debater .agent-torso { background: linear-gradient(180deg, #1e40af, #1e3a8a); }
+  .t-debater .agent-arm-l, .t-debater .agent-arm-r { background: #1e3a8a; }
+  .t-debater .agent-tag { color: #60a5fa; border-color: rgba(96,165,250,0.2); }
+
+  /* --- 评委 --- */
+  .t-scorer .agent-head { background: linear-gradient(135deg, #a78bfa, #8b5cf6); }
+  .t-scorer .agent-torso { background: linear-gradient(180deg, #5b21b6, #4c1d95); }
+  .t-scorer .agent-arm-l, .t-scorer .agent-arm-r { background: #4c1d95; }
+  .t-scorer .agent-tag { color: #a78bfa; border-color: rgba(167,139,250,0.2); }
+
+  /* --- 数据研究员 --- */
+  .t-data-clerk .agent-head { background: linear-gradient(135deg, #34d399, #10b981); }
+  .t-data-clerk .agent-torso { background: linear-gradient(180deg, #065f46, #064e3b); }
+  .t-data-clerk .agent-arm-l, .t-data-clerk .agent-arm-r { background: #064e3b; }
+  .t-data-clerk .agent-tag { color: #34d399; border-color: rgba(52,211,153,0.2); }
+
+  /* 移除按钮 */
+  .rm {
+    position: absolute; top: -2px; right: -2px;
+    width: 16px; height: 16px; border-radius: 50%;
+    background: #ef4444; border: 2px solid #0c1222;
+    color: #fff; font-size: 8px; line-height: 1;
+    cursor: pointer; display: flex; align-items: center; justify-content: center;
+    opacity: 0; transition: opacity 0.2s; z-index: 70;
+  }
+  .seat:hover .rm { opacity: 1; }
+  .seat[data-p="0"] .rm { display: none !important; }
+
+  /* ==============================
+     底部面板
+     ============================== */
+  .add-panel {
+    position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%);
+    z-index: 200; display: flex; gap: 10px;
+    padding: 10px 18px;
+    background: rgba(12,18,34,0.92);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(148,163,184,0.08);
+    border-radius: 14px;
+    box-shadow: 0 8px 30px rgba(0,0,0,0.4);
+  }
+  .abtn {
+    display: flex; align-items: center; gap: 7px;
+    padding: 7px 14px;
+    border: 1px solid rgba(148,163,184,0.1);
+    border-radius: 8px;
+    background: rgba(30,41,59,0.6);
+    color: #cbd5e1; font-size: 12px; font-weight: 500;
+    cursor: pointer; transition: all 0.25s; font-family: inherit;
+  }
+  .abtn:hover {
+    background: rgba(51,65,85,0.7);
+    border-color: rgba(148,163,184,0.25);
+    transform: translateY(-1px);
+    box-shadow: 0 4px 10px rgba(0,0,0,0.2);
+  }
+  .abtn:active { transform: translateY(0); }
+  .abtn.off { opacity: 0.3; pointer-events: none; }
+  .abtn .d { width: 8px; height: 8px; border-radius: 50%; }
+  .abtn.b1 .d { background: #3b82f6; box-shadow: 0 0 6px rgba(59,130,246,0.4); }
+  .abtn.b2 .d { background: #8b5cf6; box-shadow: 0 0 6px rgba(139,92,246,0.4); }
+  .abtn.b3 .d { background: #10b981; box-shadow: 0 0 6px rgba(16,185,129,0.4); }
+
+  /* Toast */
+  .toast {
+    position: fixed; top: 72px; left: 50%;
+    transform: translateX(-50%) translateY(-10px);
+    padding: 8px 18px;
+    background: rgba(30,41,59,0.95);
+    backdrop-filter: blur(8px);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 8px; font-size: 12px; color: #e2e8f0;
+    z-index: 300; opacity: 0; transition: all 0.3s; pointer-events: none;
+  }
+  .toast.show { opacity: 1; transform: translateX(-50%) translateY(0); }
+
+  /* 选择弹窗 */
+  .spop {
+    position: fixed; z-index: 500;
+    display: flex; flex-direction: column; gap: 4px;
+    padding: 8px;
+    background: rgba(12,18,34,0.96);
+    backdrop-filter: blur(16px);
+    border: 1px solid rgba(148,163,184,0.12);
+    border-radius: 10px;
+    box-shadow: 0 8px 28px rgba(0,0,0,0.5);
+    animation: spop-in 0.2s ease-out;
+  }
+  @keyframes spop-in {
+    from { opacity: 0; transform: translate(-50%,-100%) scale(0.92); }
+    to { opacity: 1; transform: translate(-50%,-100%) scale(1); }
+  }
+  .spop button {
+    padding: 7px 14px;
+    border: 1px solid rgba(148,163,184,0.08);
+    border-radius: 6px;
+    background: rgba(30,41,59,0.6);
+    color: #e2e8f0; font-size: 12px;
+    cursor: pointer; transition: all 0.15s;
+    font-family: inherit; text-align: left; white-space: nowrap;
+  }
+  .spop button:hover { background: rgba(51,65,85,0.8); border-color: rgba(148,163,184,0.25); }
+
+  /* ==============================
+     灯光效果
+     ============================== */
+  .lamp {
+    position: fixed; top: -80px; left: 50%; transform: translateX(-50%);
+    width: 400px; height: 300px;
+    background: radial-gradient(ellipse, rgba(251,191,36,0.03) 0%, transparent 70%);
+    pointer-events: none; z-index: 0;
+  }
+</style>
+</head>
+<body>
+
+<div class="lamp"></div>
+
+<div class="title-bar"><h1>🏛 AI 圆桌会议</h1></div>
+
+<div class="status-bar">
+  <span><span class="status-dot"></span>就绪</span>
+  <span id="info">1 / 8 座位</span>
+</div>
+
+<div class="scene-center">
+  <div class="scene" id="scene">
+    <div class="floor"></div>
+    <div class="table-group">
+      <div class="table-shadow"></div>
+      <div class="table-rim"></div>
+      <div class="table-top"></div>
+      <div class="table-decor"><div class="ring"></div></div>
+      <div class="table-icon">⚖</div>
+    </div>
+  </div>
+</div>
+
+<div class="add-panel">
+  <button class="abtn b1" onclick="qAdd('debater')" id="bd"><span class="d"></span>辩手</button>
+  <button class="abtn b2" onclick="qAdd('scorer')" id="bs"><span class="d"></span>评委</button>
+  <button class="abtn b3" onclick="qAdd('data-clerk')" id="bc"><span class="d"></span>数据研究员</button>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const N = 8, MP = 0;
+const S = { seats: Array(N).fill(null), cnt: { debater:0, scorer:0, 'data-clerk':0 } };
+const T = {
+  moderator:  { k:'moderator',  n:'主持人', r:'Moderator', f:true },
+  debater:    { k:'debater',    n:i=>`辩手 ${i}`, r:'Debater' },
+  scorer:     { k:'scorer',     n:i=>`评委 ${i}`, r:'Scorer' },
+  'data-clerk':{ k:'data-clerk', n:i=>`研究员 ${i}`, r:'Data Clerk' },
+};
+
+// 2.5D 椭圆布局：中心 (400, 280), rx=300, ry=190
+const L = [];
+for (let i = 0; i < N; i++) {
+  const a = (270 + i * 45) * Math.PI / 180;
+  const cx = 400 + 280 * Math.cos(a);
+  const cy = 280 + 175 * Math.sin(a);
+  L.push({ x: cx, y: cy, z: Math.round(cy) }); // z 越大越前
+}
+
+function init() {
+  const sc = document.getElementById('scene');
+  L.forEach((p, i) => {
+    const d = document.createElement('div');
+    d.className = 'seat'; d.dataset.p = i;
+    d.style.left = (p.x - 34) + 'px';
+    d.style.top  = (p.y - 39) + 'px';
+    d.style.zIndex = p.z;
+    d.onclick = () => click(i);
+    d.innerHTML = `<div class="chair-shadow"></div><div class="chair-wrap"><div class="chair-back"></div><div class="chair-cushion"></div><div class="leg-l"></div><div class="leg-r"></div></div>`;
+    sc.appendChild(d);
+  });
+  S.seats[MP] = { ...T.moderator, name:'主持人', type:'moderator' };
+  render(MP); ui();
+}
+
+function render(i) {
+  const el = document.querySelector(`[data-p="${i}"]`);
+  const a = S.seats[i];
+  el.querySelectorAll('.agent,.empty-marker,.rm').forEach(c=>c.remove());
+  if (a) {
+    const m = a.type==='moderator';
+    const d = document.createElement('div');
+    d.className = `agent t-${a.type}`;
+    d.innerHTML = `${m?'<div class="crown">👑</div><div class="tie"></div>':''}
+      <div class="agent-head"><div class="agent-eyes"><div class="agent-eye"></div><div class="agent-eye"></div></div></div>
+      <div class="agent-torso"></div><div class="agent-arm-l"></div><div class="agent-arm-r"></div>
+      <div class="agent-tag">${a.name}<span class="sub">${a.r}</span></div>
+      ${!a.f?`<div class="rm" onclick="event.stopPropagation();rm(${i})">✕</div>`:''}`;
+    el.appendChild(d);
+  } else {
+    const e = document.createElement('div');
+    e.className = 'empty-marker';
+    e.innerHTML = '<svg viewBox="0 0 24 24"><line x1="12" y1="5" x2="12" y2="19"/><line x1="5" y1="12" x2="19" y2="12"/></svg>';
+    el.appendChild(e);
+  }
+}
+
+function click(i) { if (!S.seats[i]) showPop(i); }
+
+function showPop(i) {
+  document.querySelectorAll('.spop').forEach(e=>e.remove());
+  const r = document.querySelector(`[data-p="${i}"]`).getBoundingClientRect();
+  const p = document.createElement('div'); p.className = 'spop';
+  p.style.left = (r.left+r.width/2)+'px'; p.style.top = (r.top-6)+'px';
+  [{k:'debater',t:'🎤 辩手'},{k:'scorer',t:'📊 评委'},{k:'data-clerk',t:'🔍 数据研究员'}].forEach(x=>{
+    const b = document.createElement('button'); b.textContent = x.t;
+    b.onclick = e => { e.stopPropagation(); place(i,x.k); p.remove(); };
+    p.appendChild(b);
+  });
+  document.body.appendChild(p);
+  setTimeout(()=>{ const c=e=>{if(!p.contains(e.target)){p.remove();document.removeEventListener('click',c)}};document.addEventListener('click',c); },20);
+}
+
+function place(i,t) {
+  const c=T[t]; S.cnt[t]++;
+  const nm = typeof c.n==='function'?c.n(S.cnt[t]):c.n;
+  S.seats[i]={...c,name:nm,type:t}; render(i); ui(); toast(`✅ ${nm} 已入座`);
+}
+
+function rm(i) {
+  const a=S.seats[i]; if(!a||a.f)return;
+  S.cnt[a.type]=Math.max(0,S.cnt[a.type]-1);
+  S.seats[i]=null; render(i); ui(); toast(`👋 ${a.name} 已离席`);
+}
+
+function qAdd(t) {
+  for(let i=1;i<N;i++) if(!S.seats[i]){place(i,t);return;}
+  toast('⚠️ 座位已满');
+}
+
+function ui() {
+  const n=S.seats.filter(Boolean).length;
+  document.getElementById('info').textContent=`${n} / ${N} 座位`;
+  const f=n>=N;
+  ['bd','bs','bc'].forEach(id=>document.getElementById(id).classList.toggle('off',f));
+}
+
+function toast(m) {
+  const e=document.getElementById('toast'); e.textContent=m; e.classList.add('show');
+  clearTimeout(e._t); e._t=setTimeout(()=>e.classList.remove('show'),2000);
+}
+
+init();
+</script>
+</body>
+</html>

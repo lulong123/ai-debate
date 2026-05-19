@@ -9,8 +9,6 @@ from app.models.schemas import (
     AgentThinking,
     DebateMinutes,
     RoundJudgment,
-    ScoreEntry,
-    ScoreResult,
     Verdict,
 )
 from app.models.session import SessionStatus
@@ -63,22 +61,6 @@ async def test_orchestrator_full_flow(db: AsyncSession):
         """Mock complete_typed that returns proper Pydantic model instances."""
         call_count["n"] += 1
         n = call_count["n"]
-        if response_model is ScoreResult:
-            if n <= 1:
-                return ScoreResult(scores=[
-                    ScoreEntry(
-                        position_id=pos1.id, position_name="支持",
-                        points=60, comment="论据充分",
-                    ),
-                    ScoreEntry(
-                        position_id=pos2.id, position_name="反对",
-                        points=40, comment="反驳较弱",
-                    ),
-                ])
-            return ScoreResult(scores=[
-                ScoreEntry(position_id=pos1.id, position_name="支持", points=55, comment=""),
-                ScoreEntry(position_id=pos2.id, position_name="反对", points=45, comment=""),
-            ])
         if response_model is RoundJudgment:
             return RoundJudgment(decision="CONCLUDE", reason="辩论充分", guidance="")
         if response_model is DebateMinutes:

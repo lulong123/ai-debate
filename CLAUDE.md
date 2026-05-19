@@ -69,7 +69,7 @@ frontend/
    - 数据研究员为每位辩手搜索(**时间感知关键词 + 数据边界约束**)
    - **预筛查**: 仅凭标题+摘要排除明显不相关结果，节省 web_reader 开销
    - **迭代搜索**: 若交叉验证佐证不足(`validated < 2`)，自动生成补充关键词重新搜索
-   - 辩手**先思考**(`think_before_speaking` → `AgentThinking` → **若需要数据则触发重新搜索** → 重新思考) → 再发言(**强制引用数据池，遵守数据边界**)
+   - 辩手**先思考**(`think_before_speaking`，**context 含数据池+数据边界** → `AgentThinking` → **若需要数据则触发重新搜索** → 重新思考) → 再发言(**强制引用数据池，遵守数据边界**)
    - 评委**先思考**(`think_before_scoring` → `agent_thinking` SSE) → 再评分(含数据运用维度)
    - 主持人**先思考**(`think_before_judging` → **若需要数据则触发重新搜索**) → 再判断(继续/结束)
 6. 用户可在辩论中向数据池添加自己的数据
@@ -104,6 +104,17 @@ frontend/
 - 最多 4 个补充搜索关键词（主持人最多 2 个）
 - 重新思考的 SSE phase 标记为 `rethink`，前端可区分
 
+### 辩手思考可见数据池
+- `orchestrator.py`: 辩手 `think_before_speaking()` 前将数据池 + 数据边界注入 context
+- 辩手思考时就知道数据池有什么数据，避免重复请求已有数据
+- 发言时仍然会再次注入完整数据池（确保引用准确）
+
+### NeedDecomposition 显式 sufficiency 判断
+- `schemas.py: NeedDecomposition` 新增 `sufficient: bool` 字段
+- LLM 在分解搜索需求时先判断"数据池是否已满足需求"，`sufficient=true` 时直接返回空 queries
+- 代码检查 `decomposition.sufficient` 后跳过搜索，不再把空 queries 当失败生成垃圾 fallback
+- fallback 改用 `topic`（议题）而非 `semantic_need`（原始数据需求文本）提取实体，避免生成无意义关键词
+
 ### 系统上下文注入
 - `base.py: build_system_context()` 为每个 agent 注入动态系统信息
 - 包含当前 UTC 日期时间(精确到分钟)、星期、当前年份
@@ -126,6 +137,7 @@ frontend/
 - `data_clerk.py: verify_results()` 旧验证方法(兼容保留): 边界范围/多源佐证/池一致性三重验证
 - 验证失败(异常)时 fallback 返回全部结果(不阻塞流程)
 - **DRY**: `research_with_validation()` 整合了 orchestrator.py / session.py 三处重复的搜索流水线
+- **全量提取**: `MAX_EXTRACT_URLS=10`，所有筛查通过的结果都走 webReader + fact extraction，不再只提取前3个
 
 ### 时间感知搜索
 - `data_clerk.py: _time_awareness_hint()` 将议题时间语义转为具体日期
@@ -248,7 +260,7 @@ docker-compose up --build
 
 ## 状态
 
-**V1.5 数据预筛查 + 迭代搜索**。65/65 测试通过，前端 TS 编译通过。
+**V1.5 数据预筛查 + 迭代搜索**。152/152 测试通过，前端 TS 编译通过。
 
 ### 核心特性
 
@@ -274,7 +286,7 @@ docker-compose up --build
 - [Data Clerk Iterative Search Details](C:\Users\16141\.claude\plans\data-clerk-iterative-search.md) — 迭代搜索详细设计（prompts、方法签名、数据流）
 
 ### 验证状态
-- 后端: 65/65 测试全部通过 (含 11 预筛查/迭代测试 + 13 辩手状态测试 + 4 重新思考流程测试)
+- 后端: 152/152 测试全部通过 (含 11 预筛查/迭代测试 + 13 辩手状态测试 + 4 重新思考流程测试 + 9 模糊匹配测试)
 - 前端: TypeScript strict mode 编译通过
 - 需删除旧 DB 文件重启后端以应用新表迁移
 
@@ -302,6 +314,10 @@ docker-compose up --build
 - DebaterState: 跨轮次辩手状态积累，防止重复已失败论点
 - DRY 搜索流水线: `research_with_validation()` 整合 3 处重复代码 (orchestrator + session clarify + session suggest)
 - 数据请求→重新思考: 思考中发现数据不足可触发补充搜索 + 重新思考闭环
+- 辩手思考可见数据池: `think_before_speaking` 前注入数据池+数据边界到 context，避免重复请求已有数据
+- NeedDecomposition sufficiency: `sufficient` 字段显式判断数据池是否已满足需求，空 queries 不再触发垃圾 fallback 搜索
+- 全量 fact extraction: `MAX_EXTRACT_URLS` 从 3 提到 10，所有筛查通过的结果都走 webReader 提取，非 StatMuse 数据也有机会入池
+- 数据池模糊匹配: `_map_validated_to_results` 改用模糊匹配（子串包含 + 数字重叠 + token 重叠），交叉验证的合成文本不再需要精确匹配原始 key_facts，非 StatMuse 数据源（虎扑、新浪、ESPN等）也能正确进入公开数据池
 
 ### 待做 (V2)
 - SQLite → PostgreSQL (生产部署)

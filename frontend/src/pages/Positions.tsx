@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
-import { useNavigate, useParams } from "react-router-dom";
+import { useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { suggestPositions, startDiscussion } from "../lib/api";
 
 interface Position {
@@ -27,13 +27,17 @@ interface SearchStep {
 export function Positions() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
   const [positions, setPositions] = useState<Position[]>([]);
   const [selected, setSelected] = useState<Set<string>>(new Set());
   const [loading, setLoading] = useState(true);
   const [starting, setStarting] = useState(false);
   const [error, setError] = useState("");
   const [dataClerkReason, setDataClerkReason] = useState("");
-  const [enableDataClerk, setEnableDataClerk] = useState(false);
+  // Auto-enable data clerk if moderator recommended it via URL param
+  const [enableDataClerk, setEnableDataClerk] = useState(
+    searchParams.get("data_clerk") === "1",
+  );
   const [preliminaryData, setPreliminaryData] = useState<
     Array<{ title: string; snippet: string; url: string }> | null
   >(null);
@@ -181,52 +185,59 @@ export function Positions() {
         </div>
         <div className="bg-neutral-900 border border-neutral-800 rounded-xl p-6">
           {thinkingSteps.length > 0 || thinkingContent || searchSteps.length > 0 ? (
-            <div className="space-y-2">
-              {thinkingSteps.map((step, i) => (
-                <div
-                  key={`step-${i}`}
-                  className="flex items-center gap-2 text-sm text-neutral-400"
-                >
-                  <div
-                    className={`w-1.5 h-1.5 rounded-full ${
-                      i === thinkingSteps.length - 1
-                        ? "bg-blue-500 animate-pulse"
-                        : "bg-neutral-600"
-                    }`}
-                  />
-                  <span>{step.message}</span>
-                </div>
-              ))}
+            <div>
+              {/* Timeline steps */}
+              <div className="space-y-0">
+                {thinkingSteps.map((step, i) => {
+                  const isLast = i === thinkingSteps.length - 1 && !thinkingContent && searchSteps.length === 0;
+                  const isDone = i < thinkingSteps.length - 1;
+                  return (
+                    <div key={`step-${i}`} className="flex gap-3">
+                      <div className="flex flex-col items-center">
+                        <div
+                          className={`w-2.5 h-2.5 rounded-full mt-1.5 shrink-0 ${
+                            isLast ? "bg-blue-500 animate-pulse" : isDone ? "bg-blue-500/60" : "bg-neutral-600"
+                          }`}
+                        />
+                        {i < thinkingSteps.length - 1 && (
+                          <div className="w-px flex-1 bg-neutral-700/50 min-h-3" />
+                        )}
+                      </div>
+                      <span className={`text-sm pb-3 ${isDone ? "text-neutral-500" : "text-neutral-300"}`}>
+                        {step.message}
+                      </span>
+                    </div>
+                  );
+                })}
+              </div>
+
+              {/* Thinking content */}
               {thinkingContent && (
-                <details
-                  open
-                  className="mt-3 p-3 rounded-lg border border-amber-700/40 bg-amber-950/20"
-                >
-                  <summary className="text-sm font-medium text-amber-400 cursor-pointer">
-                    主持人思考中...
+                <details className="mt-2 p-3 rounded-lg border border-amber-700/30 bg-amber-950/15">
+                  <summary className="text-xs font-medium text-amber-400/80 cursor-pointer select-none">
+                    主持人思考过程
                   </summary>
-                  <p className="mt-2 text-xs text-amber-200/70 whitespace-pre-wrap leading-relaxed">
+                  <div className="mt-2 text-xs text-amber-200/60 whitespace-pre-wrap leading-relaxed max-h-40 overflow-y-auto">
                     {thinkingContent}
-                  </p>
+                  </div>
                 </details>
               )}
+
+              {/* Search results */}
               {searchSteps.length > 0 && (
-                <details
-                  open
-                  className="mt-3 p-3 rounded-lg border border-cyan-800/40 bg-cyan-950/20"
-                >
-                  <summary className="text-sm font-medium text-cyan-400 cursor-pointer">
-                    搜索结果（{searchSteps.reduce((acc, s) => acc + s.results.length, 0)} 条）
+                <details className="mt-2 p-3 rounded-lg border border-cyan-800/30 bg-cyan-950/15">
+                  <summary className="text-xs font-medium text-cyan-400/80 cursor-pointer select-none">
+                    搜索数据（{searchSteps.reduce((acc, s) => acc + s.results.length, 0)} 条）
                   </summary>
-                  <div className="mt-2 space-y-2">
+                  <div className="mt-2 space-y-2 max-h-60 overflow-y-auto">
                     {searchSteps.map((step, si) => (
                       <div key={`search-${si}`}>
-                        <div className="text-xs text-cyan-500/70 mb-1">
+                        <div className="text-xs text-cyan-500/60 mb-1">
                           关键词：{step.queries.join("、")}
                         </div>
                         {step.results.map((r, ri) => (
-                          <div key={ri} className="text-xs ml-2 mb-1">
-                            <span className="text-cyan-400/70 font-medium">{r.title}</span>
+                          <div key={ri} className="text-xs ml-2 mb-1.5">
+                            <span className="text-cyan-400/60 font-medium">{r.title}</span>
                             <span className="mx-1 text-neutral-600">-</span>
                             <span className="text-neutral-400">
                               {r.snippet.slice(0, 120)}{r.snippet.length > 120 ? "..." : ""}
@@ -236,7 +247,7 @@ export function Positions() {
                                 href={r.url}
                                 target="_blank"
                                 rel="noopener noreferrer"
-                                className="ml-1 text-cyan-500/50 hover:text-cyan-400"
+                                className="ml-1 text-cyan-500/40 hover:text-cyan-400"
                               >
                                 [链接]
                               </a>

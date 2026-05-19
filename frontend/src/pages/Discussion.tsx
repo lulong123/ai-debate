@@ -1,31 +1,67 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { useSSE } from "../hooks/useSSE";
 import { ChatStream } from "../components/ChatStream";
-import { ScorePanel } from "../components/ScorePanel";
 import { DataPoolPanel } from "../components/DataPoolPanel";
+import {
+  getDataPool,
+  getMessages,
+  getPositions,
+  type DataPoolItem,
+  type MessageResponse,
+  type PositionItem,
+} from "../lib/api";
 
 export function Discussion() {
   const { sessionId } = useParams<{ sessionId: string }>();
   const navigate = useNavigate();
   const { events, connected } = useSSE(sessionId || null);
-  const [showScores, setShowScores] = useState(false);
   const [showDataPool, setShowDataPool] = useState(true);
+
+  // History from API (for completed / reconnect)
+  const [initialMessages, setInitialMessages] = useState<MessageResponse[] | null>(null);
+  const [initialPool, setInitialPool] = useState<DataPoolItem[] | null>(null);
+  const [initialPositions, setInitialPositions] = useState<PositionItem[] | null>(null);
+
+  useEffect(() => {
+    if (!sessionId) return;
+    Promise.all([
+      getMessages(sessionId).catch(() => []),
+      getDataPool(sessionId).catch(() => []),
+      getPositions(sessionId).catch(() => []),
+    ]).then(([msgs, pool, pos]) => {
+      setInitialMessages(msgs);
+      setInitialPool(pool);
+      setInitialPositions(pos);
+    });
+  }, [sessionId]);
 
   const status = useMemo(() => {
     const lastEvent = events[events.length - 1];
+    if (!lastEvent && initialMessages !== null) {
+      // No SSE events yet — infer from persisted messages
+      return initialMessages.length > 0 ? "completed" : "waiting";
+    }
     if (!lastEvent) return "waiting";
     if (lastEvent.type === "discussion_end") return "completed";
     if (lastEvent.type === "error") return "error";
     return "discussing";
-  }, [events]);
+  }, [events, initialMessages]);
 
   const currentRound = useMemo(() => {
     for (let i = events.length - 1; i >= 0; i--) {
       if (events[i].type === "round_start") return events[i].round as number;
     }
+    // Fallback: derive from persisted messages
+    if (initialMessages) {
+      let maxRound = 0;
+      for (const m of initialMessages) {
+        if (m.round_number && m.round_number > maxRound) maxRound = m.round_number;
+      }
+      return maxRound;
+    }
     return 0;
-  }, [events]);
+  }, [events, initialMessages]);
 
   if (!sessionId) {
     return (
@@ -77,12 +113,6 @@ export function Discussion() {
           >
             {showDataPool ? "隐藏数据池" : "数据池"}
           </button>
-          <button
-            onClick={() => setShowScores(!showScores)}
-            className="text-xs text-neutral-500 hover:text-neutral-300 px-2 py-1 border border-neutral-800 rounded"
-          >
-            {showScores ? "隐藏评分" : "显示评分"}
-          </button>
           {status === "completed" && (
             <button
               onClick={() => navigate(`/minutes/${sessionId}`)}
@@ -115,16 +145,21 @@ export function Discussion() {
       {/* Main content */}
       <div className="flex flex-col md:flex-row gap-4 flex-1 min-h-0">
         <div className="flex-1 min-w-0">
-          <ChatStream events={events} />
+          <ChatStream
+            events={events}
+            initialMessages={initialMessages}
+            initialPool={initialPool}
+            initialPositions={initialPositions}
+          />
         </div>
         {showDataPool && sessionId && (
           <div className="w-full md:w-80 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-none">
-            <DataPoolPanel sessionId={sessionId} events={events} isActive={showDataPool} />
-          </div>
-        )}
-        {showScores && (
-          <div className="w-full md:w-72 shrink-0 overflow-y-auto max-h-[40vh] md:max-h-none">
-            <ScorePanel events={events} />
+            <DataPoolPanel
+              sessionId={sessionId}
+              events={events}
+              initialPool={initialPool}
+              isActive={showDataPool}
+            />
           </div>
         )}
       </div>

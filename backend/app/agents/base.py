@@ -104,9 +104,17 @@ class DebaterState:
 class BaseAgent:
     """Base class for all agents."""
 
-    def __init__(self, system_prompt: str, model: str | None = None):
+    def __init__(
+        self,
+        system_prompt: str,
+        model: str | None = None,
+        api_key: str | None = None,
+        base_url: str | None = None,
+    ):
         self.system_prompt = system_prompt
         self._model_override = model
+        self._api_key_override = api_key
+        self._base_url_override = base_url
 
     def _build_messages(self, context: str, user_message: str) -> list[dict]:
         system_content = f"{build_system_context()}\n\n{self.system_prompt}"
@@ -124,7 +132,12 @@ class BaseAgent:
         inject this thinking into the second-pass context.
         """
         messages = self._build_messages(context, user_message)
-        result = await complete_typed(messages, think_model, model=self._model_override)
+        result = await complete_typed(
+            messages, think_model,
+            model=self._model_override,
+            api_key=self._api_key_override,
+            api_base=self._base_url_override,
+        )
         logger.info(
             "Agent thinking (%s): %s",
             think_model.__name__,
@@ -135,20 +148,40 @@ class BaseAgent:
     async def stream(self, context: str, user_message: str) -> AsyncGenerator[str, None]:
         """Stream agent response token by token."""
         messages = self._build_messages(context, user_message)
-        async for token in stream_completion(messages, model=self._model_override):
+        async for token in stream_completion(
+            messages,
+            model=self._model_override,
+            api_key=self._api_key_override,
+            api_base=self._base_url_override,
+        ):
             yield token
 
     async def respond(self, context: str, user_message: str) -> str:
         """Get complete response from agent."""
         messages = self._build_messages(context, user_message)
-        return await complete(messages, model=self._model_override)
+        return await complete(
+            messages,
+            model=self._model_override,
+            api_key=self._api_key_override,
+            api_base=self._base_url_override,
+        )
 
     async def respond_json(self, context: str, user_message: str) -> dict:
         """Get JSON response from agent."""
         messages = self._build_messages(context, user_message)
-        return await complete_json(messages, model=self._model_override)
+        return await complete_json(
+            messages,
+            model=self._model_override,
+            api_key=self._api_key_override,
+            api_base=self._base_url_override,
+        )
 
     async def respond_typed(self, response_model: type[T], context: str, user_message: str) -> T:
         """Get typed response validated against a Pydantic model."""
         messages = self._build_messages(context, user_message)
-        return await complete_typed(messages, response_model, model=self._model_override)
+        return await complete_typed(
+            messages, response_model,
+            model=self._model_override,
+            api_key=self._api_key_override,
+            api_base=self._base_url_override,
+        )

@@ -27,6 +27,14 @@ async def init_db():
                 "ALTER TABLE sessions ADD COLUMN preliminary_data JSON"
             ))
 
+        # Data pool publish_date migration
+        result = await conn.execute(text("PRAGMA table_info(data_pool)"))
+        pool_columns = [row[1] for row in result]
+        if "publish_date" not in pool_columns:
+            await conn.execute(text(
+                "ALTER TABLE data_pool ADD COLUMN publish_date VARCHAR(50) DEFAULT ''"
+            ))
+
 
 async def get_db():
     async with async_session() as session:

@@ -5,20 +5,17 @@ from datetime import datetime, timezone
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.data_clerk import DataClerkAgent
+from app.agents.data_clerk import DataClerkAgent, format_result_with_facts
 from app.agents.moderator import ModeratorAgent
 from app.agents.perspective import PerspectiveAgent
-from app.agents.scorer import ScorerAgent
 from app.config import settings
 from app.models import MessageRole, SessionStatus
 from app.models.schemas import AgentThinking, RoundJudgment
 from app.routers.sse import publish
-from app.services.search import get_search_provider
-from app.storage.repository import SessionRepository
+from app.services.search import get_search_provider, get_statmuse_provider
+from app.storage.repository import MAX_POOL_DISPLAY, SessionRepository
 
 logger = logging.getLogger(__name__)
-
-MAX_POOL_DISPLAY = 20  # Max results to inject into agent prompts
 
 STRATEGY_GUIDANCE = {
     "ATTACK": "你的策略是进攻。找出对手论点的具体漏洞，集中攻击。",
@@ -33,8 +30,8 @@ class Orchestrator:
         self.db = db
         self.repo = SessionRepository(db)
         self.moderator = ModeratorAgent()
-        self.scorer = ScorerAgent()
         self.search = get_search_provider()
+        self.statmuse = get_statmuse_provider()
         self._seq = 0
 
     async def _init_seq(self, session_id: str):
@@ -94,26 +91,31 @@ class Orchestrator:
 
             # Create data clerk if enabled
             data_clerk = DataClerkAgent() if enable_data_clerk else None
+            searched_queries: set[str] = set()  # Session-level search keyword dedup
 
             # 0.5 Establish data scope (if data clerk is enabled)
             data_scope_text = ""
             if data_clerk is not None:
-                # Search topic facts first so scope is based on real data, not training data
-                scope_data_context = ""
-                try:
-                    scope_results = await data_clerk.research_topic(session.topic, self.search)
-                    if scope_results:
-                        lines = [
-                            f"- {r.get('title', '')}：{r.get('snippet', '')}"
-                            for r in scope_results
-                        ]
-                        scope_data_context = "\n".join(lines)
-                        logger.info(
-                            "Scope search got %d results for session %s",
-                            len(scope_results), session_id,
+                # Read pool first — clarify/suggest may have already fetched data
+                scope_data_context = await self.repo.get_pool_summary(session_id)
+                if not scope_data_context:
+                    # Pool is empty — do fresh search
+                    try:
+                        scope_results = await data_clerk.research_topic(
+                            session.topic, self.search,
+                            statmuse_provider=self.statmuse,
                         )
-                except Exception as e:
-                    logger.warning("Scope search failed for session %s: %s", session_id, e)
+                        if scope_results:
+                            await self.repo.persist_research_results(
+                                session_id, scope_results, source="scope",
+                            )
+                            scope_data_context = await self.repo.get_pool_summary(session_id)
+                            logger.info(
+                                "Scope search got %d results for session %s",
+                                len(scope_results), session_id,
+                            )
+                    except Exception as e:
+                        logger.warning("Scope search failed for session %s: %s", session_id, e)
 
                 scope = await self.moderator.establish_data_scope(
                     session.topic, positions_data, data_context=scope_data_context
@@ -148,18 +150,12 @@ class Orchestrator:
                 for p in active_positions
             ]
 
-            # Track all scores
-            all_scores = []
-
             # Track all debate messages across rounds for context
             all_debate_messages = []
 
-            # Public data pool: shared across all agents, accumulates across rounds
-            # Initialize from preliminary_data (pre-debate search) + DB-persisted items
+            # Public data pool: loaded from DB (unified pool across all phases)
             public_data_pool: list[dict] = []
-            if session.preliminary_data:
-                public_data_pool.extend(session.preliminary_data)
-            existing_pool = await self.repo.get_data_pool(session_id)
+            existing_pool = await self.repo.get_data_pool(session_id, public_only=True)
             for item in existing_pool:
                 public_data_pool.append(item.to_dict())
 
@@ -169,10 +165,9 @@ class Orchestrator:
                 await self.repo.update_session(session)
 
                 # Re-read data pool from DB to pick up user contributions
-                db_pool = await self.repo.get_data_pool(session_id)
+                db_pool = await self.repo.get_data_pool(session_id, public_only=True)
                 if db_pool:
                     db_dicts = [item.to_dict() for item in db_pool]
-                    # Merge: keep preliminary_data + DB items, avoiding duplicates
                     existing_ids = {d.get("id") for d in public_data_pool if d.get("id")}
                     for d in db_dicts:
                         if d.get("id") not in existing_ids:
@@ -193,6 +188,22 @@ class Orchestrator:
                         session.topic, all_debate_messages,
                         round_messages, round_num,
                     )
+
+                    # Inject data pool + data scope into context for thinking
+                    # so debaters can see existing data before requesting more
+                    if data_clerk is not None and public_data_pool:
+                        pool_text = self._format_data_pool(public_data_pool)
+                        scope_injection = ""
+                        if data_scope_text:
+                            scope_injection = (
+                                f"\n\n【数据边界】\n{data_scope_text}\n"
+                            )
+                        context += (
+                            f"{scope_injection}\n\n"
+                            f"【公开数据池】（思考时请先检查数据池，不要重复请求已有数据）\n"
+                            f"{pool_text}\n"
+                        )
+
                     user_msg = (
                         f"第 {round_num} 轮辩论。\n"
                         f"你是「{agent.position_name}」方的辩手。\n"
@@ -274,6 +285,7 @@ class Orchestrator:
                             data_clerk=data_clerk,
                             public_data_pool=public_data_pool,
                             data_scope_text=data_scope_text,
+                            searched_queries=searched_queries,
                         )
 
                         # Re-think: second thinking pass with new data
@@ -384,41 +396,8 @@ class Orchestrator:
                         "message_id": msg_id,
                     })
 
-                # 3. Score this round
+                # 3. Collect round messages
                 all_debate_messages.extend(round_messages)
-
-                # Two-pass thinking: scorer analyzes before scoring
-                scorer_thinking_text = ""
-                if settings.enable_cot:
-                    try:
-                        scorer_think = await self.scorer.think_before_scoring(
-                            session.topic, round_messages, positions_data,
-                        )
-                        scorer_thinking_text = scorer_think.thinking
-                        await self._emit(session_id, {
-                            "type": "agent_thinking",
-                            "agent": "scorer",
-                            "agent_name": "评委",
-                            "thinking": scorer_thinking_text,
-                            "round": round_num,
-                        })
-                    except Exception as e:
-                        logger.warning("Scorer thinking failed: %s", e)
-
-                # Build scorer prompt, optionally with data pool and thinking
-                score_result = await self._score_with_data(
-                    session.topic, round_messages, positions_data,
-                    public_data_pool if data_clerk else None,
-                    scorer_thinking_text,
-                )
-                scores = score_result.get("scores", [])
-                all_scores.extend(scores)
-
-                await self._emit(session_id, {
-                    "type": "score_update",
-                    "scores": scores,
-                    "round": round_num,
-                })
 
                 # 4. Moderator judges round
                 summary = "\n".join(
@@ -483,6 +462,7 @@ class Orchestrator:
                         data_clerk=data_clerk,
                         public_data_pool=public_data_pool,
                         data_scope_text=data_scope_text,
+                        searched_queries=searched_queries,
                     )
                     if mod_results:
                         try:
@@ -573,7 +553,6 @@ class Orchestrator:
                 ],
                 thinking_text=minutes_thinking_text,
             )
-            minutes["all_scores"] = all_scores
 
             session.minutes = minutes
             session.status = SessionStatus.COMPLETED
@@ -627,20 +606,47 @@ class Orchestrator:
         display = pool[-MAX_POOL_DISPLAY:]
         lines = []
         for i, r in enumerate(display, 1):
-            title = r.get('title', '')
-            snippet = r.get('snippet', '')
-            url = r.get('url', '')
-            lines.append(f"[{i}] {title}\n    {snippet}")
-            if url:
-                lines.append(f"    来源: {url}")
+            formatted = format_result_with_facts(r)
+            # Prepend citation number
+            if formatted.startswith("- "):
+                formatted = f"[{i}] {formatted[2:]}"
+            else:
+                formatted = f"[{i}] {formatted}"
+            lines.append(formatted)
         return "\n".join(lines)
 
     def _format_data_pool_summary(self, pool: list[dict]) -> str:
-        """Short summary of existing pool for data clerk (to avoid re-searching)."""
+        """Detailed summary of existing pool for data clerk (to avoid re-searching).
+
+        Shows individual key_facts so the LLM knows exactly what data points
+        are already covered, enabling accurate deduplication.
+        """
+        import json as _json
+
         display = pool[-MAX_POOL_DISPLAY:]
         lines = []
         for i, r in enumerate(display, 1):
-            lines.append(f"[{i}] {r.get('title', '')} - {r.get('snippet', '')[:80]}")
+            parts = [f"[{i}] {r.get('title', '')}"]
+            kf = r.get("key_facts", "")
+            if kf:
+                try:
+                    parsed = _json.loads(kf) if isinstance(kf, str) else kf
+                    facts = parsed.get("key_facts", [])
+                    if facts:
+                        # Show individual facts (truncated) — this is the key data
+                        for f in facts[:5]:
+                            parts.append(f"  - {str(f)[:100]}")
+                    else:
+                        s = parsed.get("summary", "")
+                        if s:
+                            parts.append(f"  摘要: {s[:100]}")
+                except (ValueError, AttributeError):
+                    pass
+            else:
+                snippet = r.get("snippet", "")
+                if snippet:
+                    parts.append(f"  摘要: {snippet[:100]}")
+            lines.append("\n".join(parts))
         return "\n".join(lines)
 
     async def _fetch_and_persist_data(
@@ -655,13 +661,17 @@ class Orchestrator:
         data_clerk: DataClerkAgent,
         public_data_pool: list[dict],
         data_scope_text: str = "",
+        searched_queries: set[str] | None = None,
     ) -> list[dict]:
         """Fetch data via data clerk's semantic intent protocol, persist to DB, emit SSE events."""
         data_msg_id = f"data_{agent_id}_{round_num}"
+
+        # Build full research context (public + private) for data clerk awareness
         pool_summary = (
             self._format_data_pool_summary(public_data_pool)
             if public_data_pool else ""
         )
+        full_research_context = await self.repo.get_data_clerk_context(session_id)
 
         await self._emit(session_id, {
             "type": "data_fetch_start",
@@ -677,9 +687,10 @@ class Orchestrator:
         )
 
         # Semantic intent protocol: pool check → decompose → search → sufficiency
-        results, validation = await data_clerk.research_for_agent(
+        outcome = await data_clerk.research_for_agent(
             topic, data_need, self.search,
             pool_summary=pool_summary,
+            full_research_context=full_research_context,
             data_scope=data_scope_text,
             on_search=on_search,
             on_progress=lambda evt: self._emit(session_id, {
@@ -687,7 +698,11 @@ class Orchestrator:
                 "agent_name": agent_name,
                 "phase": "debate",
             }),
+            statmuse_provider=self.statmuse,
+            searched_queries=searched_queries,
         )
+
+        validation = outcome.validation
 
         # Emit cross-validation result
         if validation.validated or validation.unique:
@@ -699,49 +714,30 @@ class Orchestrator:
                 "note": validation.note,
             })
 
-        # Persist verified results to DB (with extracted key_facts)
-        for r in results:
-            try:
-                await self.repo.add_data_pool_item(
-                    session_id=session_id,
-                    source="data_clerk",
-                    title=r.get("title", ""),
-                    snippet=r.get("snippet", ""),
-                    url=r.get("url", ""),
-                    round_number=round_num,
-                    key_facts=r.get("key_facts"),
-                )
-            except Exception:
-                pass
+        # Persist ALL results to DB with public/private split
+        all_results = outcome.public_results + outcome.private_results
+        public_urls = {r.get("url", "") for r in outcome.public_results}
+        if all_results:
+            await self.repo.persist_research_results(
+                session_id, all_results,
+                source="data_clerk",
+                round_number=round_num,
+                public_urls=public_urls,
+            )
 
-        public_data_pool.extend(results)
+        # Only public results go to in-memory pool for agent consumption
+        public_data_pool.extend(outcome.public_results)
 
         await self._emit(session_id, {
             "type": "data_fetch_complete",
             "message_id": data_msg_id,
             "agent": agent_id,
             "agent_name": agent_name,
-            "results": results,
+            "results": outcome.public_results,
             "round": round_num,
         })
 
-        return results
-
-    async def _score_with_data(
-        self, topic: str, round_messages: list[dict],
-        positions_data: list[dict], data_pool: list[dict] | None,
-        thinking_text: str = "",
-    ) -> dict:
-        """Score round, optionally injecting data pool and thinking context."""
-        enriched_topic = topic
-        if data_pool:
-            pool_text = self._format_data_pool(data_pool)
-            enriched_topic = f"{topic}\n\n【公开数据池】\n{pool_text}"
-        if thinking_text:
-            enriched_topic = (
-                f"{enriched_topic}\n\n【评委分析】\n{thinking_text}"
-            )
-        return await self.scorer.score_round(enriched_topic, round_messages, positions_data)
+        return outcome.public_results
 
     async def _judge_with_data(
         self, topic: str, round_num: int, max_rounds: int,
@@ -839,7 +835,7 @@ class Orchestrator:
                     "agent_name": agent_name,
                     "round": round_num,
                     "results": [
-                        {"title": r.get("title", ""), "snippet": r.get("snippet", ""), "url": r.get("url", "")}
+                        {"title": r.get("title", ""), "snippet": r.get("snippet", ""), "url": r.get("url", ""), "publish_date": r.get("publish_date", "")}
                         for r in results
                     ],
                 })

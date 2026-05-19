@@ -15,9 +15,12 @@ class ClarifyResult(BaseModel):
     """Topic clarification result."""
 
     valid: bool = True
+    rejected: bool = False
     reason: str = ""
     question: str = ""
     suggestion: str = ""
+    need_data_clerk: bool = False
+    clarify_round: int = 1
 
 
 class PositionItem(BaseModel):
@@ -32,6 +35,15 @@ class PositionsResult(BaseModel):
     """Position suggestions from moderator."""
 
     positions: list[PositionItem] = Field(default_factory=list)
+
+
+class SubjectClarityCheck(BaseModel):
+    """Quick check: is the main subject clear enough AND does the topic need search?"""
+
+    subject_clear: bool = True
+    needs_search: bool = True
+    unclear_entities: list[str] = Field(default_factory=list)
+    reason: str = ""
 
 
 class DataClerkRecommendation(BaseModel):
@@ -73,24 +85,6 @@ class DebateMinutes(BaseModel):
     key_clashes: list[str] = Field(default_factory=list)
     verdict: Verdict = Field(default_factory=Verdict)
     summary: str = ""
-
-
-# --- Scorer ---
-
-
-class ScoreEntry(BaseModel):
-    """Score for one position in a round."""
-
-    position_id: str = ""
-    position_name: str = ""
-    points: int = 0
-    comment: str = ""
-
-
-class ScoreResult(BaseModel):
-    """Score distribution for a debate round."""
-
-    scores: list[ScoreEntry] = Field(default_factory=list)
 
 
 # --- Agent Thinking (ReAct-style: free-form + semantic data need) ---
@@ -148,12 +142,56 @@ class ResearchStep(BaseModel):
     search_queries: list[str] = Field(
         default_factory=list, description="本步骤的搜索关键词，最多2个",
     )
+    discovered_entities: list[str] = Field(
+        default_factory=list,
+        description="从搜索结果中发现的具名实体（日期、球队、比赛名、对手等）",
+    )
+    discovered_facts: list[str] = Field(
+        default_factory=list,
+        description="从搜索结果中提取的关键事实（带具体数值/日期）",
+    )
+    resolved_sub_topic: str = Field(
+        default="",
+        description="如果本步结果解决了一个子问题，写出答案",
+    )
 
 
 class ResearchPlan(BaseModel):
     """Multi-step research plan for a topic."""
 
     steps: list[ResearchStep] = Field(default_factory=list)
+
+
+class TopicEntity(BaseModel):
+    """A searchable entity extracted from the debate topic."""
+
+    name: str = Field(description="实体名称（如'赖斯'、'Declan Rice'）")
+    entity_type: str = Field(default="", description="实体类型（球员/球队/事件/地点等）")
+    aliases: list[str] = Field(
+        default_factory=list, description="别名（如英文名、简称）",
+    )
+
+
+class HiddenSubTopic(BaseModel):
+    """A hidden sub-topic that needs resolution before the main question."""
+
+    question: str = Field(description="需要先回答的子问题")
+    depends_on: list[str] = Field(
+        default_factory=list, description="依赖的实体名",
+    )
+    resolution_strategy: str = Field(default="", description="解决策略")
+
+
+class TopicDecomposition(BaseModel):
+    """Decomposition of a research topic into entities and hidden sub-topics."""
+
+    entities: list[TopicEntity] = Field(
+        default_factory=list, description="议题中涉及的实体",
+    )
+    hidden_sub_topics: list[HiddenSubTopic] = Field(
+        default_factory=list, description="需要先解决的隐藏子问题",
+    )
+    search_strategy_hint: str = Field(default="", description="搜索策略提示")
 
 
 class DataScope(BaseModel):
@@ -205,6 +243,24 @@ class CrossValidatedFacts(BaseModel):
     note: str = Field(default="", description="验证说明")
 
 
+class RecencyDecision(BaseModel):
+    """LLM decision on whether a search needs recency filtering."""
+
+    needs_recent: bool = Field(
+        description="本次搜索是否需要最新数据（近1周内）？"
+        "体育比赛、时事新闻、最新动态 → true。"
+        "历史分析、理论知识、通用百科 → false。",
+    )
+    recency: str = Field(
+        default="noLimit",
+        description="时效性过滤级别：oneDay / oneWeek / oneMonth / noLimit",
+    )
+    reasoning: str = Field(
+        default="",
+        description="判断理由（一句话）",
+    )
+
+
 class ScreenedResults(BaseModel):
     """Results screened for relevance and consistency before deep extraction."""
 
@@ -242,12 +298,21 @@ class PoolSufficiency(BaseModel):
 
 
 class NeedDecomposition(BaseModel):
-    """Convert semantic data need into targeted search queries."""
+    """Convert semantic data need into targeted search queries.
+
+    The LLM can signal that existing data is already sufficient by setting
+    sufficient=true and leaving queries empty, instead of generating
+    unnecessary searches.
+    """
 
     queries: list[str] = Field(
         default_factory=list, description="1-2 targeted search queries",
     )
     reasoning: str = ""
+    sufficient: bool = Field(
+        default=False,
+        description="True if existing data pool already answers the need",
+    )
 
 
 class DataSufficiency(BaseModel):
@@ -257,3 +322,39 @@ class DataSufficiency(BaseModel):
     gaps: list[str] = Field(default_factory=list)
     relevant_facts: list[str] = Field(default_factory=list)
     reasoning: str = ""
+
+
+class DataGapDetection(BaseModel):
+    """Detect if new search results reveal a critical data gap vs existing pool."""
+
+    has_gap: bool = False
+    gap_description: str = ""
+    supplementary_queries: list[str] = Field(
+        default_factory=list,
+        description="Queries to fill the detected gap, empty if has_gap=false",
+    )
+    reasoning: str = ""
+
+
+# --- Research outcome ---
+
+
+class ResearchOutcome:
+    """Result of a research pipeline with public/private data split.
+
+    public_results: items with validated facts — shared with all agents and frontend.
+    private_results: items without validated facts — kept internally for potential promotion.
+    validation: cross-validation result identifying validated/unique/contradictory facts.
+    """
+
+    __slots__ = ("public_results", "private_results", "validation")
+
+    def __init__(
+        self,
+        public_results: list[dict] | None = None,
+        private_results: list[dict] | None = None,
+        validation: "CrossValidatedFacts | None" = None,
+    ):
+        self.public_results = public_results or []
+        self.private_results = private_results or []
+        self.validation = validation or CrossValidatedFacts()

@@ -29,5 +29,19 @@ Thumbs.db
 .env
 *.local
 
+# Model config (user-specific, not committed)
+backend/config.yaml
+
+# Logs and temp
+*.log
+*.stackdump
+test_extract*.txt
+test_live.txt
+test_minutes.txt
+
+# Build cache
+*.tsbuildinfo
+
 # Claude
 .claude/
+.gstack/

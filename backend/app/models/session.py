@@ -2,7 +2,7 @@ import enum
 import uuid
 from datetime import datetime, timezone
 
-from sqlalchemy import JSON, DateTime, Enum, ForeignKey, Integer, String, Text
+from sqlalchemy import JSON, Boolean, DateTime, Enum, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.storage.database import Base
@@ -65,7 +65,6 @@ class Position(Base):
 class MessageRole(str, enum.Enum):
     MODERATOR = "moderator"
     PERSPECTIVE = "perspective"
-    SCORER = "scorer"
     SYSTEM = "system"
 
 
@@ -95,7 +94,9 @@ class DataPoolItem(Base):
     title: Mapped[str] = mapped_column(String(200), nullable=False)
     snippet: Mapped[str] = mapped_column(Text, nullable=False, default="")
     url: Mapped[str] = mapped_column(String(500), nullable=False, default="")
+    publish_date: Mapped[str] = mapped_column(String(50), nullable=False, default="")
     key_facts: Mapped[str | None] = mapped_column(Text, nullable=True)  # JSON: extracted key facts
+    is_public: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     round_number: Mapped[int] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime, default=utcnow)
 
@@ -108,6 +109,8 @@ class DataPoolItem(Base):
             "title": self.title,
             "snippet": self.snippet,
             "url": self.url,
+            "publish_date": self.publish_date,
             "key_facts": self.key_facts,
+            "is_public": self.is_public,
             "round_number": self.round_number,
         }

@@ -82,17 +82,27 @@ async def stream_session(
 
     async def event_generator():
         try:
-            # Replay missed events on reconnect
-            if last_event_id is not None:
-                history = _HISTORY.get(session_id, [])
-                for _ts, event in history:
+            # Replay history on both first connection and reconnect.
+            # On reconnect (last_event_id set), replay only events after that ID.
+            # On first connection, replay all history so we don't miss early events.
+            history = _HISTORY.get(session_id, [])
+            if history:
+                replay_after = None
+                if last_event_id is not None:
+                    # Find the position of the last seen event
+                    for i, (_ts, evt) in enumerate(history):
+                        eid = evt.get("message_id") or evt.get("round")
+                        if eid is not None and str(eid) == last_event_id:
+                            replay_after = i
+                            break
+                start_idx = (replay_after + 1) if replay_after is not None else 0
+                for _ts, event in history[start_idx:]:
                     eid = event.get("message_id") or event.get("round")
-                    if eid is not None:
-                        yield {
-                            "event": event.get("type", "message"),
-                            "data": json.dumps(event, ensure_ascii=False),
-                            "id": str(eid),
-                        }
+                    yield {
+                        "event": event.get("type", "message"),
+                        "data": json.dumps(event, ensure_ascii=False),
+                        **({"id": str(eid)} if eid is not None else {}),
+                    }
 
             while True:
                 if await request.is_disconnected():

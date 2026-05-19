@@ -9,8 +9,6 @@ from app.models.schemas import (
     AgentThinking,
     DebateMinutes,
     RoundJudgment,
-    ScoreEntry,
-    ScoreResult,
     Verdict,
 )
 from app.models.session import SessionStatus
@@ -66,11 +64,6 @@ async def test_debater_rethink_after_data_fetch(db: AsyncSession):
     async def mock_typed(messages, response_model, model=None, **kwargs):
         call_log.append(("typed", response_model.__name__))
 
-        if response_model is ScoreResult:
-            return ScoreResult(scores=[
-                ScoreEntry(position_id=pos1.id, position_name="A方", points=50, comment=""),
-                ScoreEntry(position_id=pos2.id, position_name="B方", points=50, comment=""),
-            ])
         if response_model is RoundJudgment:
             return RoundJudgment(decision="CONCLUDE", reason="充分", guidance="")
         if response_model is DebateMinutes:
@@ -136,11 +129,6 @@ async def test_debater_no_rethink_without_data(db: AsyncSession):
     async def mock_typed(messages, response_model, model=None, **kwargs):
         call_log.append(("typed", response_model.__name__))
 
-        if response_model is ScoreResult:
-            return ScoreResult(scores=[
-                ScoreEntry(position_id=pos1.id, position_name="是", points=50, comment=""),
-                ScoreEntry(position_id=pos2.id, position_name="否", points=50, comment=""),
-            ])
         if response_model is RoundJudgment:
             return RoundJudgment(decision="CONCLUDE", reason="充分", guidance="")
         if response_model is DebateMinutes:
@@ -180,8 +168,8 @@ async def test_debater_no_rethink_without_data(db: AsyncSession):
 
     # Only 1 AgentThinking call per debater (no re-think)
     thinking_calls = [c for c in call_log if c[1] == "AgentThinking"]
-    # 2 debaters + 1 scorer + 1 moderator + 1 minutes = 5
-    assert len(thinking_calls) == 5, f"Expected 5 thinking calls, got {len(thinking_calls)}"
+    # 2 debaters + 1 moderator + 1 minutes = 4
+    assert len(thinking_calls) == 4, f"Expected 4 thinking calls, got {len(thinking_calls)}"
 
 
 async def test_moderator_no_fetch_without_data_requests(db: AsyncSession):
@@ -196,11 +184,6 @@ async def test_moderator_no_fetch_without_data_requests(db: AsyncSession):
     async def mock_typed(messages, response_model, model=None, **kwargs):
         call_log.append(("typed", response_model.__name__))
 
-        if response_model is ScoreResult:
-            return ScoreResult(scores=[
-                ScoreEntry(position_id=pos1.id, position_name="甲", points=50, comment=""),
-                ScoreEntry(position_id=pos2.id, position_name="乙", points=50, comment=""),
-            ])
         if response_model is RoundJudgment:
             return RoundJudgment(decision="CONCLUDE", reason="充分", guidance="")
         if response_model is DebateMinutes:
@@ -243,11 +226,6 @@ async def test_rethink_failure_graceful(db: AsyncSession):
     think_count = {"n": 0}
 
     async def mock_typed(messages, response_model, model=None, **kwargs):
-        if response_model is ScoreResult:
-            return ScoreResult(scores=[
-                ScoreEntry(position_id=pos1.id, position_name="正方", points=50, comment=""),
-                ScoreEntry(position_id=pos2.id, position_name="反方", points=50, comment=""),
-            ])
         if response_model is RoundJudgment:
             return RoundJudgment(decision="CONCLUDE", reason="充分", guidance="")
         if response_model is DebateMinutes:
